@@ -11,7 +11,7 @@ system's operational limits for safe, precise alignment.
 *(The mechanism is called a hexapod throughout the rest of this document.)*
 
 - **Original concept/author:** Joe Brown (CSU Sacramento), 2006 — <https://github.com/jotux/Steward-Platform-Forward-Kinematics-Solver>
-- **Adapted & extended by:** Adam B. Johnson (University of Victoria, NRC HAA), 2022–2026
+- **Adapted & extended by:** Adam B. Johnson, 2022–2026 (University of Victoria, 2021–2025)
 
 > Several figures come from the dissertation, where the calculator was adapted to align the SPIDERS
 > instrument (Subaru Pathfinder Instrument for Detecting Exoplanets & Retrieving Spectra) on the
