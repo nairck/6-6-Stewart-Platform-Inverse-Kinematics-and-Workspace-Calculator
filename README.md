@@ -11,7 +11,7 @@ system's operational limits for safe, precise alignment.
 *(The mechanism is called a hexapod throughout the rest of this document.)*
 
 - **Original concept/author:** Joe Brown (CSU Sacramento), 2006 — <https://github.com/jotux/Steward-Platform-Forward-Kinematics-Solver>
-- **Adapted & extended by:** Adam B. Johnson (University of Victoria), 2022–2025
+- **Adapted & extended by:** Adam B. Johnson (University of Victoria, NRC HAA), 2022–2026
 
 > Several figures come from the dissertation, where the calculator was adapted to align the SPIDERS
 > instrument (Subaru Pathfinder Instrument for Detecting Exoplanets & Retrieving Spectra) on the
@@ -29,9 +29,9 @@ and saved files are compatible across them.
 
 | Version | Best for | Where it lives / how to get it |
 |---|---|---|
-| 🪟 **Windows executable** (`.exe`) | Running on Windows with **no install** — no MATLAB, no Python, nothing to set up. Just download and double-click. | **[Releases](../../releases)** (download the latest `HexapodCalculator.exe`) |
-| 📐 **MATLAB** | MATLAB users; the original, reference implementation. | [`matlab/`](matlab/) — run `RUN_HEXAPOD_CALCULATOR` |
-| 🐍 **Python** | Building your own binary (incl. **macOS / Linux**), or reading/modifying the source. | [`python/`](python/) — `pip install -r requirements.txt` then `python run.py` |
+| **Windows executable** (`.exe`) | Running on Windows with **no install** — no MATLAB, no Python, nothing to set up. Just download and double-click. | **[Releases](../../releases)** (download the latest `HexapodCalculator.exe`) |
+| **MATLAB** | MATLAB users; the original, reference implementation. | [`matlab/`](matlab/) — run `RUN_HEXAPOD_CALCULATOR` |
+| **Python** | Building your own binary (incl. **macOS / Linux**), or reading/modifying the source. | [`python/`](python/) — `pip install -r requirements.txt` then `python run.py` |
 
 **Which should I use?**
 - Just want to *use* the tool on Windows → grab the **executable** from Releases.
