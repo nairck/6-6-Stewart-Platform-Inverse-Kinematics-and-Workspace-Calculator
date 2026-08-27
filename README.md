@@ -65,9 +65,7 @@ the global frame with the homogeneous transform **T** (rotation **R** and transl
 computes each leg length as the Euclidean distance between the transformed platform joint **b′ᵢ**
 and its base joint **aᵢ**:
 
-```
-Lᵢ = ‖aᵢ − b′ᵢ‖ = ‖aᵢ − T·bᵢ‖        (i = 1 … 6)
-```
+<h3 align="center"><code>Lᵢ = ‖aᵢ − b′ᵢ‖ = ‖aᵢ − T·bᵢ‖</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>(i = 1 … 6)</code></h3>
 
 The resulting set {L₁ … L₆} is the IK solution for that pose. Saved leg lengths then serve as the
 reference for computing the **relative** adjustments needed to move to a new pose.
@@ -149,9 +147,7 @@ Selecting an origin re-expresses everything rather than moving anything. With **
 and **B** the selected one, each origin contributing its rotation **R** and offset **d** relative to
 Origin 1, every joint coordinate becomes
 
-```
-q′ = M·q + e        M = R_Bᵀ·R_A        e = R_Bᵀ·(d_A − d_B)
-```
+<h3 align="center"><code>q′ = M·q + e</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>M = R_Bᵀ·R_A</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>e = R_Bᵀ·(d_A − d_B)</code></h3>
 
 and the old and new poses follow as **R′ = M·R·Mᵀ**, **t′ = M·t + e − R′·e**, which leaves every leg
 vector, and therefore every leg length, unchanged. A rotation entered afterwards is a rotation about
@@ -198,9 +194,7 @@ leg relative to the leg that turns the most. For the row's axis the platform is 
 about the origin's point (a translation along the axis, or a Rodrigues rotation about it), the leg
 lengths are differenced centrally, converted to actuator degrees through the lead, and normalized:
 
-```
-ΔL = ½·[L(+δ) − L(−δ)]        Δθ = ΔL·360 / lead        ratio = Δθ / max|Δθ|
-```
+<h3 align="center"><code>ΔL = ½·[L(+δ) − L(−δ)]</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>Δθ = ΔL·360 / lead</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>ratio = Δθ / max|Δθ|</code></h3>
 
 The lead cancels in the ratio, so the entries are independent of the thread pitch; the sign gives the
 direction of turn, positive extending the leg. Each row carries a **Turn [°]** box: type the turn you
