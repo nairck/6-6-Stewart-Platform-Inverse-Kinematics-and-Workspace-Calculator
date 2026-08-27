@@ -57,7 +57,7 @@ The platform is defined by six base joints **aᵢ** and six platform joints **b�
 own (X, Y, Z) location: neither set of joints is assumed to lie in a plane. The **home pose** places
 the platform's input focus at the global origin.
 
-A commanded pose is a translation **p** = [pₓ, p_y, p_z] plus a **ZYX Euler rotation** — yaw (ψ)
+A commanded pose is a translation **p** = [p<sub>x</sub>, p<sub>y</sub>, p<sub>z</sub>] plus a **ZYX Euler rotation** — yaw (ψ)
 about Z, then pitch (θ) about Y, then roll (ϕ) about X. The IK transforms each platform joint into
 the global frame with the homogeneous transform **T** (rotation **R** and translation **p**), then
 computes each leg length as the Euclidean distance between the transformed platform joint **b′ᵢ**
