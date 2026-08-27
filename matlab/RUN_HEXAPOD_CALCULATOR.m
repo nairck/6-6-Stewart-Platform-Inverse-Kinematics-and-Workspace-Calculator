@@ -2,6 +2,7 @@
 % Filename:        RUN_HEXAPOD_CALCULATOR.m
 %
 % Author:          Joe Brown (CSU Sacramento) – August 4, 2006  
+% Version:         see hexapod_version.m (matches the Python package version)
 % Modified by:     Adam Johnson – August 2022 to April 2025
 %
 % Description:

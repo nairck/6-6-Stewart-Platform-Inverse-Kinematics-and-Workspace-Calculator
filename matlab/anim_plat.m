@@ -9,15 +9,16 @@ function anim_plat(plat_coords)
 
     %── Retrieve plot‐handles ────────────────────────────────────────
     plotinfo = get(gcf,'UserData');
+    if isfield(plotinfo, 'sketch_disp'), D = plotinfo.sketch_disp; else, D = eye(3); end   % see draw_plat.m
     legH   = arrayfun(@(k) plotinfo.(sprintf('p%d',k)),   1:6);
     platH  = arrayfun(@(k) plotinfo.(sprintf('p%d',k+6)), 1:6);
     baseH  = arrayfun(@(k) plotinfo.(sprintf('p%d',k+12)),1:3);  % p13,p14,p15
     
     %── Read updated base joint positions ───────────────────────────
-    baseZ   = str2double(get(plotinfo.baseZ,'String'));
     base_x  = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dx',i)),'String')),1:6);
     base_y  = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dy',i)),'String')),1:6);
-    basePts = [base_x; base_y; baseZ*ones(1,6)];  % 3×6
+    base_z  = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dz',i)),'String')),1:6);
+    basePts = D * [base_x; base_y; base_z];  % 3×6 (each base joint has its own Z), display frame
 
     %── Cache old leg & platform data ──────────────────────────────
     oldLegX = zeros(6,2); oldLegY = zeros(6,2); oldLegZ = zeros(6,2);
@@ -39,7 +40,7 @@ function anim_plat(plat_coords)
     oldLegZ(:,1) = basePts(3,:)';
 
     %── Parse new platform points into 6×3 array ───────────────────
-    newPts = reshape(plat_coords,3,6)';  % rows = [x y z] for each corner
+    newPts = (D * reshape(plat_coords,3,6))';  % rows = [x y z] for each corner, display frame
 
     %── Animate interpolation ──────────────────────────────────────
     nSteps = 40;
@@ -48,10 +49,10 @@ function anim_plat(plat_coords)
         t = step / nSteps;
         
          %—— first, update base edges from the GUI controls ——
-        baseZ  = str2double(get(plotinfo.baseZ,'String'));
         bx     = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dx',i)),'String')),1:6);
         by     = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dy',i)),'String')),1:6);
-        bp     = [bx; by; baseZ*ones(1,6)];
+        bz     = arrayfun(@(i) str2double(get(plotinfo.(sprintf('base%dz',i)),'String')),1:6);
+        bp     = D * [bx; by; bz];
         for e = 1:3
             i1 = baseEdges(e,1); i2 = baseEdges(e,2);
             set(baseH(e), ...

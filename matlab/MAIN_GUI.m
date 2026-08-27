@@ -10,48 +10,51 @@ titleStr = 'Hexapod Inverse Kinematics and Workspace Solver';
 switch fcn
     case 'stew'
         myname = mfilename;
+        % Window: the original 720 x 710 figure, 150 px wider for the Z column
+        % in each joint table and 50 px shorter for the removed plane-height
+        % rows.  RS/TS are the resulting shifts of the right-hand block and of
+        % everything above the ZPD Leg Length row (identical to config.py).
+        RS = 150;  TS = -50;
         fig = figure( ...
-            'Position',centerfig(720,710), ...
+            'Position',centerfig(720+RS,710+TS), ...
             'Resize','off','MenuBar','none','NumberTitle','off', ...
             'Name',titleStr,'Interruptible','off', ...
-            'Color',get(0,'DefaultUIControlBackgroundColor'));
-        plotinfo.ax = axes('Units','pixels','Position',[360 20 350 350],'Visible','off');
+            'Color',get(0,'DefaultUIControlBackgroundColor'), ...
+            'CloseRequestFcn',sprintf('%s(''quit'');',myname), ...
+            'KeyPressFcn',@(src,evt) escape_to_quit(evt,myname));
+        % Sketch drawing region: from just inside the "(turns + rem. ang.)"
+        % column to the right block's right edge (854), from above the "Colour
+        % Theme" label (58) to below the Leg Actuator Lead row (343).  It sits
+        % behind every uicontrol; the drawing is centred in it by 'axis equal'.
+        plotinfo.ax = axes('Units','pixels','Position',[376 58 478 285],'Visible','off');
         plotinfo.myname = myname;
         set(fig,'UserData',plotinfo);
 
         % Headers & axis labels
         uicontrol(fig,'Style','text','String','Zero-Displacement Configuration  [mm]', ...
-            'Position',[-6,685,250,18],'FontWeight','bold','FontSize',8,'ForegroundColor','#00008b');
+            'Position',[-6,685+TS,250,18],'FontWeight','bold','FontSize',8,'ForegroundColor','#00008b');
         uicontrol(fig,'Style','text','String','Workspace Search Limits and Constraints', ...
-            'Position',[465,630,250,18],'FontWeight','bold','FontSize',8,'ForegroundColor','#00008b');
-        uicontrol(fig,'Style','text','String','xsi','Position',[80,585,20,12]);
-        uicontrol(fig,'Style','text','String','ysi','Position',[155,585,20,12]);
-        uicontrol(fig,'Style','text','String','xmi','Position',[312,585,20,12]);
-        uicontrol(fig,'Style','text','String','ymi','Position',[382,585,20,12]);
-        uicontrol(fig,'Style','pushbutton','String','±','Position',[102 581 20 17],'Callback',@(s,e)openAdjustDlg('xsi'));
-        uicontrol(fig,'Style','pushbutton','String','±','Position',[177 581 20 17],'Callback',@(s,e)openAdjustDlg('ysi'));
-        uicontrol(fig,'Style','pushbutton','String','±','Position',[334 581 20 17],'Callback',@(s,e)openAdjustDlg('xmi'));
-        uicontrol(fig,'Style','pushbutton','String','±','Position',[404 581 20 17],'Callback',@(s,e)openAdjustDlg('ymi'));
-
-
-
-        % Zero‑Displacement & bench parameters
-        Zf = {
-            'Base Z Coordinate:','baseZ',[28,661,100,13],[128,657,70,20],'base';
-            'Platform Z Coordinate:','platZheight',[10,637,120,13],[128,632,70,20],'base';
-            'ZPD Leg Length:','zpdLegLength',[24,612,120,13],[128,607,70,20],'base';
-            'Bench Top Thickness:','benchThickness',[236,661,150,13],[369,657,70,20],'misc';
-            'Platform Plane to Benchbottom:','platToBenchBottomZ',[210,637,160,13],[369,632,70,20],'misc';
-            'Calculated Focus to Benchtop Z:','benchZheight',[207,612,160,13],[369,607,70,20],'misc';
-            };
-        for i=1:size(Zf,1)
-            uicontrol(fig,'Style','text','String',Zf{i,1},'Position',Zf{i,3});
-            plotinfo.(Zf{i,2}) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',Zf{i,4},'BackgroundColor','w', ...
-                'Callback',sprintf('%s(''%s'');',myname,Zf{i,5}));
+            'Position',[465+RS,630+TS,250,18],'FontWeight','bold','FontSize',8,'ForegroundColor','#00008b');
+        % column headers + adjust buttons: base x/y/z at 55/130/205, platform
+        % x/y/z at 360/434/509 (a 75 px Z column added to each table).
+        colHdr = {'xsi',80; 'ysi',155; 'zsi',230; 'xmi',387; 'ymi',457; 'zmi',532};
+        for i=1:size(colHdr,1)
+            uicontrol(fig,'Style','text','String',colHdr{i,1},'Position',[colHdr{i,2},585,20,12]);
+        end
+        adjBtn = {'xsi',102; 'ysi',177; 'zsi',252; 'xmi',409; 'ymi',479; 'zmi',554};
+        for i=1:size(adjBtn,1)
+            uicontrol(fig,'Style','pushbutton','String','±','Position',[adjBtn{i,2} 581 20 17], ...
+                'Callback',@(s,e)openAdjustDlg(adjBtn{i,1}));
         end
 
-        % Base coordinates 1–6
+        % Zero-Displacement: only the ZPD leg length remains on the row under the
+        % header (every joint now carries its own Z in the tables below).
+        uicontrol(fig,'Style','text','String','ZPD Leg Length:','Position',[24,612,120,13]);
+        plotinfo.zpdLegLength = uicontrol(fig,'Style','edit','String','0', ...
+            'Position',[128,607,70,20],'BackgroundColor','w', ...
+            'Callback',sprintf('%s(''base'');',myname));
+
+        % Base coordinates 1–6 (X, Y, Z)
         for i=1:6
             yT = 567-(i-1)*25; yE = yT-7;
             uicontrol(fig,'Style','text','String',sprintf('Base %d:',i),'Position',[5,yT,50,12]);
@@ -61,25 +64,31 @@ switch fcn
             plotinfo.(sprintf('base%dy',i)) = uicontrol(fig,'Style','edit','String','0', ...
                 'Position',[130,yE,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''base'');',myname));
+            plotinfo.(sprintf('base%dz',i)) = uicontrol(fig,'Style','edit','String','0', ...
+                'Position',[205,yE,70,20],'BackgroundColor','w', ...
+                'Callback',sprintf('%s(''base'');',myname));
         end
 
-        % Platform coordinates 1–6
+        % Platform coordinates 1–6 (X, Y, Z)
         for i=1:6
             yT = 567-(i-1)*25; yE = yT-7;
-            uicontrol(fig,'Style','text','String',sprintf('Platform %d:',i),'Position',[225,yT,60,12]);
+            uicontrol(fig,'Style','text','String',sprintf('Platform %d:',i),'Position',[300,yT,60,12]);
             plotinfo.(sprintf('plat%dx',i)) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[285,yE,70,20],'BackgroundColor','w', ...
+                'Position',[360,yE,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''plat'');',myname));
             plotinfo.(sprintf('plat%dy',i)) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[359,yE,70,20],'BackgroundColor','w', ...
+                'Position',[434,yE,70,20],'BackgroundColor','w', ...
+                'Callback',sprintf('%s(''plat'');',myname));
+            plotinfo.(sprintf('plat%dz',i)) = uicontrol(fig,'Style','edit','String','0', ...
+                'Position',[509,yE,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''plat'');',myname));
         end
 
         % Constraints header & labels
-        uicontrol(fig,'Style','text','String','Constraints','Position',[455,579,130,18], ...
+        uicontrol(fig,'Style','text','String','Constraints','Position',[455+RS,579+TS,130,18], ...
             'FontWeight','bold','FontSize',8,'ForegroundColor','#A2142F');
-        uicontrol(fig,'Style','text','String','min','Position',[585,585,20,12]);
-        uicontrol(fig,'Style','text','String','max','Position',[655,585,25,12]);
+        uicontrol(fig,'Style','text','String','min','Position',[585+RS,585+TS,20,12]);
+        uicontrol(fig,'Style','text','String','max','Position',[655+RS,585+TS,25,12]);
 
         % Roll/Pitch/Yaw constraints
         C = {
@@ -87,13 +96,14 @@ switch fcn
             'Pitch [° about y]:','pitch',543,538;
             'Yaw [° about z]:','yaw',521,516;
             };
+        lblNames = {'lbl_roll', 'lbl_pitch', 'lbl_yaw'};
         for k=1:3
-            uicontrol(fig,'Style','text','String',C{k,1},'Position',[475,C{k,3},85,13]);
+            plotinfo.(lblNames{k}) = uicontrol(fig,'Style','text','String',C{k,1},'Position',[475+RS,C{k,3}+TS,85,13]);
             plotinfo.([C{k,2},'min']) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[560,C{k,4},70,20],'BackgroundColor','w', ...
+                'Position',[560+RS,C{k,4}+TS,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''constraints'');',myname));
             plotinfo.([C{k,2},'max']) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[634,C{k,4},70,20],'BackgroundColor','w', ...
+                'Position',[634+RS,C{k,4}+TS,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''constraints'');',myname));
         end
 
@@ -104,27 +114,27 @@ switch fcn
             'Z [mm]:','pz',455,450;
             };
         for k=1:3
-            uicontrol(fig,'Style','text','String',D{k,1},'Position',[495,D{k,3},50,13]);
+            uicontrol(fig,'Style','text','String',D{k,1},'Position',[495+RS,D{k,3}+TS,50,13]);
             plotinfo.([D{k,2},'min']) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[560,D{k,4},70,20],'BackgroundColor','w', ...
+                'Position',[560+RS,D{k,4}+TS,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''constraints'');',myname));
             plotinfo.([D{k,2},'max']) = uicontrol(fig,'Style','edit','String','0', ...
-                'Position',[634,D{k,4},70,20],'BackgroundColor','w', ...
+                'Position',[634+RS,D{k,4}+TS,70,20],'BackgroundColor','w', ...
                 'Callback',sprintf('%s(''constraints'');',myname));
         end
 
         % Leg‑length constraint
-        uicontrol(fig,'Style','text','String','Leg Length [mm]:','Position',[467,433,100,13]);
-        plotinfo.jointmin = uicontrol(fig,'Style','edit','String','0','Position',[560,428,70,20], ...
+        uicontrol(fig,'Style','text','String','Leg Length [mm]:','Position',[467+RS,433+TS,100,13]);
+        plotinfo.jointmin = uicontrol(fig,'Style','edit','String','0','Position',[560+RS,428+TS,70,20], ...
             'BackgroundColor','w','Callback',sprintf('%s(''misc'');',myname));
-        plotinfo.jointmax = uicontrol(fig,'Style','edit','String','0','Position',[634,428,70,20], ...
+        plotinfo.jointmax = uicontrol(fig,'Style','edit','String','0','Position',[634+RS,428+TS,70,20], ...
             'BackgroundColor','w','Callback',sprintf('%s(''misc'');',myname));
 
         % Leg Actuator Lead row
         uicontrol(fig,'Style','text','String','Leg Actuator Lead [mm/rev]:', ...
-            'Position',[476,412,150,13]);
+            'Position',[476+RS,412+TS,150,13]);
         plotinfo.actuatorLead = uicontrol(fig,'Style','edit','String','0', ...
-            'Position',[634,406,70,20], ...
+            'Position',[634+RS,406+TS,70,20], ...
             'BackgroundColor',[1,1,0.9], ...
             'Callback',sprintf('%s(''misc'');',myname));
 
@@ -177,7 +187,7 @@ switch fcn
 
 
         % Input-focus posture header & columns
-        uicontrol(fig,'Style','text','String','INPUTS - Change to Input Focus Pose:', ...
+        uicontrol(fig,'Style','text','String','INPUTS - Change to New Pose:', ...
             'Position',[-4,211-5,270,20],'FontWeight','bold','FontSize',10,'ForegroundColor','#00008b');
         uicontrol(fig,'Style','text','String','abs. old','Position',[60,190,50,15]);
         uicontrol(fig,'Style','text','String','abs. new','Position',[123,190,50,15]);
@@ -206,16 +216,18 @@ switch fcn
 
         % Control buttons & toggles
         btns = {
-            'quit','Quit',[610,10,100,25];
+            'quit','Quit',[768,10,90,25];
+            'reset_view_me','Reset View',[676,10,90,25];
+            'adj_table_me','Incremental Adj. Table',[530,10,130,25];
             'save_me','Save Everything',[247,10,100,25];
             'overwrite_me','Update Old Pose',[247,37,100,25];
             'zero_me','Zero Input Values',[247,64,100,25];
             'home_me','Go Home Input Val.',[247,91,100,25];
             'solve_inv','Solve Inverse Kinematics',[54,10,186,25];
-            'workspace_me','Draw Orientation Workspace',[475,655,150,25];
-            'reachable_workspace_me','Draw Reachable Workspace',[475,680,150,25];
-            'draw_workspace_me','Export to PNG',[630,655,75,25];
-            'draw_reachable_workspace_me','Export to PNG',[630,680,75,25];
+            'workspace_me','Draw Orientation Workspace',[475+RS,655+TS,150,25];
+            'reachable_workspace_me','Draw Reachable Workspace',[475+RS,680+TS,150,25];
+            'draw_workspace_me','Export to PNG',[630+RS,655+TS,75,25];
+            'draw_reachable_workspace_me','Export to PNG',[630+RS,680+TS,75,25];
             };
         for i=1:size(btns,1)
             plotinfo.(btns{i,1}) = uicontrol(fig,'Style','pushbutton', ...
@@ -227,31 +239,67 @@ switch fcn
         plotinfo.solutions_text = uicontrol(fig,'Style','text','String',' ','Position',[482,50,70,15],'Visible','off');
         plotinfo.nextsol = uicontrol(fig,'Style','pushbutton','String','>>','Position',[560,50,25,20], ...
             'Visible','off','Callback',sprintf('%s(''nextsol'');',myname));
-        plotinfo.animate_but = uicontrol(fig,'Style','checkbox','String','Animate?','Value',1,'Position',[630,40,70,20]);
+        plotinfo.animate_but = uicontrol(fig,'Style','checkbox','String','Animate?','Value',1,'Position',[630+RS,40,70,20]);
+        % Double height (two 25 px rows): spans the header row and the ZPD Leg
+        % Length row, level with the two Draw-Workspace buttons (605..655); left
+        % edge on the "zsi" column header (230), right edge on the platform Z
+        % column (509 + 70 = 579).
         plotinfo.editzpd_but = uicontrol(fig,'Style','togglebutton','String','Edit Zero-Displacement Coordinates', ...
-            'Position',[240,682,200,25],'Callback',sprintf('%s(''editzpd'');',myname));
+            'Position',[230,605,349,50],'FontSize',11,'Callback',sprintf('%s(''editzpd'');',myname));
         plotinfo.editConstraints_but = uicontrol(fig,'Style','togglebutton','String','Edit Workspace Search Limits and Constraints', ...
-            'Position',[475,604,230,25],'Callback',sprintf('%s(''editConstraints'');',myname));
+            'Position',[475+RS,604+TS,230,25],'Callback',sprintf('%s(''editConstraints'');',myname));
+
+        % "Current Origin: <name>" - same width as the pose buttons, twice their
+        % height (two 25 px buttons + the 2 px gap), top edge level with the
+        % INPUTS header (its top is 206 + 20 = 226).  Opens origin_dialog.
+        % the label (two or three centred lines) is set by refresh_origin_ui,
+        % which load_data calls once the origins are known
+        plotinfo.origin_but = uicontrol(fig,'Style','pushbutton', ...
+            'String','Current Origin:','Position',[247,174,112,52], ...
+            'TooltipString','Choose / add / edit the origin (point of interest) that the pose and workspaces are referenced to', ...
+            'Callback',sprintf('%s(''origin_me'');',myname));
+        % Origins / points of interest.  Every displayed coordinate and pose is
+        % expressed in the frame of the ACTIVE origin; Origin 1 is the reference
+        % frame the joints were entered in (offset fixed at zero).
+        plotinfo.origins = struct('name',{'Origin 1'},'dx',{0},'dy',{0},'dz',{0},'roll',{0},'pitch',{0},'yaw',{0});
+        plotinfo.origin_active = 1;
+        plotinfo.rpy_axes = 'XYZ';           % which axis roll / pitch / yaw rotate about
+        plotinfo.adj_config = adj_config_default(1);   % Incremental Adj. Table set-up
+        % Sketch display frame (see draw_plat.m): identity until the axes are
+        % relabelled with "Change Coords.".
+        plotinfo.sketch_disp = eye(3);
+        plotinfo.sketch_auto = true;         % choose the standard view from the geometry on the first draw
+        % "Change Coords." - single height, directly below the origin button
+        % (174..226) at the 2 px pitch of the button stacks.  Opens the modal
+        % right-handed axis relabelling dialog.
+        plotinfo.coords_but = uicontrol(fig,'Style','pushbutton', ...
+            'String','Change Coords.','Position',[247,147,112,25], ...
+            'TooltipString','Relabel the X, Y, Z axes (right-handed) and remap every joint, pose, limit and origin accordingly', ...
+            'Callback',sprintf('%s(''coords_me'');',myname));
 
         set(fig,'UserData',plotinfo);
 
         %----------------------Load data & draw initial platform
         load_data();
+        if ~isvalid(fig), return; end       % the user chose Quit in load_data
         plotinfo = get(fig,'UserData');
-        initial_coords = [
-            str2double(get(plotinfo.plat1x,'String')), str2double(get(plotinfo.plat1y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String')), ...
-            str2double(get(plotinfo.plat2x,'String')), str2double(get(plotinfo.plat2y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String')), ...
-            str2double(get(plotinfo.plat3x,'String')), str2double(get(plotinfo.plat3y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String')), ...
-            str2double(get(plotinfo.plat4x,'String')), str2double(get(plotinfo.plat4y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String')), ...
-            str2double(get(plotinfo.plat5x,'String')), str2double(get(plotinfo.plat5y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String')), ...
-            str2double(get(plotinfo.plat6x,'String')), str2double(get(plotinfo.plat6y,'String')), str2double(get(plotinfo.platZheight,'String'))-str2double(get(plotinfo.Pzval,'String'))
-            ];
+        gv = @(f) str2double(get(plotinfo.(f),'String'));
+        initial_coords = zeros(1,18);
+        for i = 1:6
+            initial_coords(3*i-2:3*i) = [gv(sprintf('plat%dx',i)), gv(sprintf('plat%dy',i)), ...
+                                         gv(sprintf('plat%dz',i)) - gv('Pzval')];
+        end
+        view(plotinfo.ax, [-30,20]);      % default view first: draw_plat fits the drawing to it
         draw_plat(initial_coords);
-        view([-30,20]);
         edit_zpd();
         edit_Constraints();
         solve_inverse();
         color_input_box();
+        % Remember the start-up state: Quit / Escape / the close button close
+        % straight away while nothing has changed since (or since the last save).
+        plotinfo = get(fig,'UserData');
+        plotinfo.saved_signature = state_signature(fig);
+        set(fig,'UserData',plotinfo);
 
     case 'solve_inv'
         pi = get(gcf,'UserData');
@@ -270,13 +318,34 @@ switch fcn
         % next_solution(); color_input_box();
 
     case {'base','plat','legs','constraints','tablepos','misc'}
-        return;
+        % A numeric box was edited (typed or pasted; the edit boxes take the
+        % standard Ctrl+C / Ctrl+V): normalise it to three decimals.
+        normalise_numeric_box(gcbo);
 
     case 'editzpd'
         edit_zpd();
 
     case 'editConstraints'
         edit_Constraints();
+
+    case 'origin_me'
+        origin_dialog(gcf);
+
+    case 'coords_me'
+        change_coords_dialog(gcf);
+
+    case 'adj_table_me'
+        incremental_adj_table(gcf);
+
+    case 'reset_view_me'
+        % back to the sketch's default view angle and fit (as in the Python
+        % version's Reset View); the display frame is kept
+        pinfo = get(gcf, 'UserData');
+        view(pinfo.ax, [-30, 20]);
+        axis(pinfo.ax, 'equal');
+        set(pinfo.ax, 'CameraViewAngleMode', 'auto');
+        camva(pinfo.ax, camva(pinfo.ax) * 1.10);
+        axis(pinfo.ax, 'vis3d');
 
     case 'workspace_me'
         pi = get(gcf,'UserData');
@@ -417,19 +486,55 @@ switch fcn
         home_data(); disp('new input data given home values...');
 
     case 'quit'
+        % Shared by the Quit button, the Escape key and the window close
+        % button (CloseRequestFcn).  Closes at once when nothing has changed
+        % since start-up or since the last Save Everything; otherwise asks.
+        fig = gcbf;
+        if isempty(fig), fig = gcf; end
+        pi = get(fig,'UserData');
+        if isfield(pi,'saved_signature') && strcmp(pi.saved_signature, state_signature(fig))
+            disp('quitting (nothing changed since the last save)...');
+            delete(fig);
+            return;
+        end
         reply = questdlg( ...
             'Quit with or without saving?', 'Quit', ...
             'Quit with saving','Quit without saving','Cancel', ...
             'Quit with saving');
         switch reply
             case 'Quit with saving'
+                set(0,'CurrentFigure',fig);
                 save_data(); disp('configuration saved...'); disp('quitting...');
-                close(gcf);
+                delete(fig);
             case 'Quit without saving'
                 disp('quitting without saving...');
-                close(gcf);
+                delete(fig);
             otherwise  % 'Cancel' or closed dialog: do nothing
         end
 
 end
+end
+
+
+function normalise_numeric_box(h)
+%NORMALISE_NUMERIC_BOX  Round an edited value box to three decimals.
+%   Surrounding whitespace / newlines (spreadsheet cells) are tolerated; a
+%   value that is not a number is reset to 0.000 with a console message.
+    if isempty(h) || ~ishghandle(h), return; end
+    raw = strtrim(get(h, 'String'));
+    if iscell(raw), raw = strjoin(raw, ' '); end
+    v = str2double(strrep(raw, char(8722), '-'));   % Unicode minus -> ASCII
+    if isnan(v) || ~isfinite(v)
+        fprintf('Not a number: "%s" reset to 0.000\n', raw);
+        v = 0;
+    end
+    set(h, 'String', sprintf('%.3f', round(v, 3)));
+end
+
+
+function escape_to_quit(evt, myname)
+%ESCAPE_TO_QUIT  Escape anywhere in the main window acts like the Quit button.
+    if strcmp(evt.Key, 'escape')
+        feval(myname, 'quit');
+    end
 end

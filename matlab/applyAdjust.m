@@ -1,5 +1,5 @@
 function applyAdjust(mainFig,field,editHndl,d2)
-    v = str2double(get(editHndl,'String'));
+    v = round(str2double(strtrim(get(editHndl,'String'))), 3);   % typed or pasted, 3 decimals
     if isnan(v)
         errordlg('Please enter a numeric value.','Invalid Input');
         return;
@@ -14,23 +14,20 @@ function applyAdjust(mainFig,field,editHndl,d2)
 
     % apply to the six controls
     pi = get(mainFig,'UserData');
+    % field is xsi/ysi/zsi (base) or xmi/ymi/zmi (platform)
     switch field
       case 'xsi', names = arrayfun(@(k)sprintf('base%dx',k),1:6,'Uni',false);
       case 'ysi', names = arrayfun(@(k)sprintf('base%dy',k),1:6,'Uni',false);
+      case 'zsi', names = arrayfun(@(k)sprintf('base%dz',k),1:6,'Uni',false);
       case 'xmi', names = arrayfun(@(k)sprintf('plat%dx',k),1:6,'Uni',false);
       case 'ymi', names = arrayfun(@(k)sprintf('plat%dy',k),1:6,'Uni',false);
+      case 'zmi', names = arrayfun(@(k)sprintf('plat%dz',k),1:6,'Uni',false);
     end
     for fn = names
         h   = pi.(fn{1});
         old = str2double(get(h,'String'));
         set(h,'String',sprintf('%.3f',old+v));
     end
-
-    % recompute benchZheight
-    newVal = str2double(get(pi.platZheight,'String')) + ...
-             str2double(get(pi.benchThickness,'String')) + ...
-             str2double(get(pi.platToBenchBottomZ,'String'));
-    set(pi.benchZheight,'String',sprintf('%.3f',newVal));
 
     delete(d2);
     solve_inverse();

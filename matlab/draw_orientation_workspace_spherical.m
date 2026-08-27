@@ -14,6 +14,14 @@ if isempty(d) || ~all(isvalid(d))
 end
 % plotinfo = get(gcf, 'UserData');
 if (scaler ~= 100)
+    rpyAxes = rpy_axes_of(plotinfo);          % roll/pitch/yaw axes assignment
+    % The 3D window keeps the sketch's "up".  The orientation workspace's axes
+    % are the roll / pitch / yaw rotation axes, i.e. the sketch's display
+    % frame times the assignment's permutation (a rotation vector transforms
+    % like a vector); stored with the data (see frame_view.m).
+    if isfield(plotinfo, 'sketch_disp'), sketchD = diag([-1 -1 1]) * plotinfo.sketch_disp; else, sketchD = eye(3); end   % unturned sketch frame
+    view_frame = sketchD * rpy_perm(rpyAxes);
+    rpy_axes = rpyAxes;
     zpdLegLength   = str2double(get(plotinfo.zpdLegLength,'String'));
     leg_lo         = str2double(get(plotinfo.jointmin,   'String'));
     leg_hi         = str2double(get(plotinfo.jointmax,   'String'));
@@ -25,10 +33,10 @@ if (scaler ~= 100)
     yaw_hi         = str2double(get(plotinfo.yawmax,     'String'));
     xsi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.base1x,plotinfo.base2x,plotinfo.base3x,plotinfo.base4x,plotinfo.base5x,plotinfo.base6x});
     ysi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.base1y,plotinfo.base2y,plotinfo.base3y,plotinfo.base4y,plotinfo.base5y,plotinfo.base6y});
+    zsi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.base1z,plotinfo.base2z,plotinfo.base3z,plotinfo.base4z,plotinfo.base5z,plotinfo.base6z});
     xmi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.plat1x, plotinfo.plat2x, plotinfo.plat3x, plotinfo.plat4x, plotinfo.plat5x, plotinfo.plat6x});
     ymi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.plat1y, plotinfo.plat2y, plotinfo.plat3y, plotinfo.plat4y, plotinfo.plat5y, plotinfo.plat6y});
-    baseZ = str2double(get(plotinfo.baseZ, 'String'));
-    platformZ = str2double(get(plotinfo.platZheight, 'String'));    
+    zmi = cellfun(@(h)str2double(get(h,'String')),{plotinfo.plat1z, plotinfo.plat2z, plotinfo.plat3z, plotinfo.plat4z, plotinfo.plat5z, plotinfo.plat6z});
     %— choose pose (home/new/old) —
     if homeNewOld==1         % new
         roll0  = str2double(get(plotinfo.roll,    'String'));
@@ -72,7 +80,7 @@ if (scaler ~= 100)
             r_lo=0; r_hi=r_init;
             while true
                 rr = r_hi*[nx,ny,nz] + [roll0,pitch0,yaw0];
-                sol = stew_inverse_ws(xsi,ysi,xmi,ymi, rr(1),rr(2),rr(3), x0,y0,z0, baseZ,platformZ ) - zpdLegLength;
+                sol = stew_inverse_ws(xsi,ysi,zsi,xmi,ymi,zmi, rr(1),rr(2),rr(3), x0,y0,z0, rpyAxes) - zpdLegLength;
                 if any(sol>leg_hi | sol<leg_lo), break; end
                 r_lo=r_hi; r_hi=2*r_hi;
             end
@@ -80,7 +88,7 @@ if (scaler ~= 100)
             while r_hi-r_lo>tol_r
                 rm = 0.5*(r_lo+r_hi);
                 rr = rm*[nx,ny,nz] + [roll0,pitch0,yaw0];
-                sol = stew_inverse_ws(xsi,ysi,xmi,ymi, rr(1),rr(2),rr(3), x0,y0,z0, baseZ,platformZ ) - zpdLegLength;
+                sol = stew_inverse_ws(xsi,ysi,zsi,xmi,ymi,zmi, rr(1),rr(2),rr(3), x0,y0,z0, rpyAxes) - zpdLegLength;
                 if any(sol>leg_hi | sol<leg_lo), r_hi=rm; else r_lo=rm; end
             end
             %— record boundary orientation —
@@ -125,7 +133,7 @@ if (scaler ~= 100)
 
     save('orientation_workspace_data_NEW.mat', ...
         'w_roll_u','w_pitch_u','w_yaw_u', ...
-        'w_roll_d','w_pitch_d','w_yaw_d','scaler');
+        'w_roll_d','w_pitch_d','w_yaw_d','scaler','view_frame','rpy_axes');
 end
 
 if isfile('orientation_workspace_data_NEW.mat')
@@ -143,7 +151,8 @@ if isfile('orientation_workspace_data_NEW.mat')
     
     figure(600); clf; hold on;
     tiledlayout(1,1,'Padding','loose','TileSpacing','loose');    nexttile; hold on;      set(gcf,'Renderer','opengl');
-    h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut(:,3),'EdgeColor','none','FaceAlpha',0.6);
+    upDir = dataset_view_frame('orientation_workspace_data_NEW.mat');   upDir = upDir(3,:)';   % colour along the window's up
+    h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut*upDir,'EdgeColor','none','FaceAlpha',0.6);
     
     %     maxArea = 30;   % mm², tweak as needed
     %     V = ptsOut; F = h.Faces;    v1 = V(F(:,2),:) - V(F(:,1),:);    v2 = V(F(:,3),:) - V(F(:,1),:);    A  = 0.5 * sqrt( sum( cross(v1,v2,2).^2, 2 ) );  % M×1
@@ -194,7 +203,7 @@ if isfile('orientation_workspace_data_NEW.mat')
     update_status(stringMSG);
     fprintf('...Total elapsed time: %02d:%06.3f ...\n', floor(tEnd/60), rem(tEnd, 60));
         figure(600)
-    view(335, 12.5);
+    frame_view(gca, 335, 12.5, dataset_view_frame('orientation_workspace_data_NEW.mat'));
     fig = gcf;
     set(fig, 'Units', 'pixels');
     set(fig, 'Position', [100, 100, 1650, 1000]);  % Fixed size, adjust as needed

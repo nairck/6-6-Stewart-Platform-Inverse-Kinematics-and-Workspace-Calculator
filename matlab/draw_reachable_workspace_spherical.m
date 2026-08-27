@@ -14,6 +14,11 @@ end
 
 
 if (scaler ~= 100)
+    rpyAxes = rpy_axes_of(plotinfo);          % roll/pitch/yaw axes assignment
+    % The 3D window keeps the sketch's "up": it is viewed through the sketch's
+    % display frame D, stored with the data (see frame_view.m).
+    if isfield(plotinfo, 'sketch_disp'), view_frame = diag([-1 -1 1]) * plotinfo.sketch_disp; else, view_frame = eye(3); end   % unturned sketch frame
+    rpy_axes = rpyAxes;
     zpdLegLength = str2double(get(plotinfo.zpdLegLength, 'String'));
     leg_lower_limit = str2double(get(plotinfo.jointmin, 'String'));
     leg_upper_limit = str2double(get(plotinfo.jointmax, 'String'));
@@ -23,12 +28,12 @@ if (scaler ~= 100)
     y_upper_limit = str2double(get(plotinfo.pymax, 'String'));
     z_lower_limit = str2double(get(plotinfo.pzmin, 'String'));
     z_upper_limit = str2double(get(plotinfo.pzmax, 'String'));
-    baseZ = str2double(get(plotinfo.baseZ, 'String'));
-    platformZ = str2double(get(plotinfo.platZheight, 'String'));
     xsi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.base1x, plotinfo.base2x, plotinfo.base3x, plotinfo.base4x, plotinfo.base5x, plotinfo.base6x});
     ysi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.base1y, plotinfo.base2y, plotinfo.base3y, plotinfo.base4y, plotinfo.base5y, plotinfo.base6y});
+    zsi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.base1z, plotinfo.base2z, plotinfo.base3z, plotinfo.base4z, plotinfo.base5z, plotinfo.base6z});
     xmi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.plat1x, plotinfo.plat2x, plotinfo.plat3x, plotinfo.plat4x, plotinfo.plat5x, plotinfo.plat6x});
     ymi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.plat1y, plotinfo.plat2y, plotinfo.plat3y, plotinfo.plat4y, plotinfo.plat5y, plotinfo.plat6y});
+    zmi = cellfun(@(h) str2double(get(h, 'String')), {plotinfo.plat1z, plotinfo.plat2z, plotinfo.plat3z, plotinfo.plat4z, plotinfo.plat5z, plotinfo.plat6z});
     if (homeNewOld == 1)    % new pose values 'roll','pitch','yaw','Pxval','Pyval','Pzval', ...
         rollp  = str2double(get(plotinfo.roll,  'String'));     pitchp  = str2double(get(plotinfo.pitch,  'String'));    yawp = str2double(get(plotinfo.yaw, 'String'));
         xp = str2double(get(plotinfo.Pxval, 'String'));         yp   = str2double(get(plotinfo.Pyval,   'String'));       zp   = str2double(get(plotinfo.Pzval,   'String'));
@@ -66,8 +71,8 @@ if (scaler ~= 100)
             r_lo = 0;  r_hi = r_init;
             while true
                 xt = xp + r_hi*nx;  yt = yp + r_hi*ny;  zt = zp + r_hi*nz;
-                sol = stew_inverse_ws(xsi,ysi,xmi,ymi,rollp,pitchp,yawp, ...
-                    xt,yt,zt,baseZ,platformZ) - zpdLegLength;
+                sol = stew_inverse_ws(xsi,ysi,zsi,xmi,ymi,zmi,rollp,pitchp,yawp, ...
+                    xt,yt,zt,rpyAxes) - zpdLegLength;
                 if any(sol > leg_upper_limit | sol < leg_lower_limit), break; end
                 r_lo = r_hi;  r_hi = 2*r_hi;
             end
@@ -75,8 +80,8 @@ if (scaler ~= 100)
             while (r_hi - r_lo) > tol_r
                 r_mid = 0.5*(r_lo + r_hi);
                 xm = xp + r_mid*nx;  ym = yp + r_mid*ny;  zm = zp + r_mid*nz;
-                solm = stew_inverse_ws(xsi,ysi,xmi,ymi,rollp,pitchp,yawp, ...
-                    xm,ym,zm,baseZ,platformZ) - zpdLegLength;
+                solm = stew_inverse_ws(xsi,ysi,zsi,xmi,ymi,zmi,rollp,pitchp,yawp, ...
+                    xm,ym,zm,rpyAxes) - zpdLegLength;
                 if any(solm > leg_upper_limit | solm < leg_lower_limit)
                     r_hi = r_mid;
                 else
@@ -118,7 +123,7 @@ if (scaler ~= 100)
     w_x_u = w_x(upIdx)-xp;  w_y_u = w_y(upIdx)-yp;  w_z_u = w_z(upIdx)-zp;
     w_x_d = w_x(dnIdx)-xp;  w_y_d = w_y(dnIdx)-yp;  w_z_d = w_z(dnIdx)-zp;
     save('reachable_workspace_data_NEW.mat', ...
-        'w_x_u','w_y_u','w_z_u','w_x_d','w_y_d','w_z_d','scaler');
+        'w_x_u','w_y_u','w_z_u','w_x_d','w_y_d','w_z_d','scaler','view_frame','rpy_axes');
 end
 
 
@@ -138,7 +143,8 @@ if isfile('reachable_workspace_data_NEW.mat')
     
     figure(500); clf; hold on;
     tiledlayout(1,1,'Padding','loose','TileSpacing','loose');    nexttile; hold on;      set(gcf,'Renderer','opengl');
-    h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut(:,3),'EdgeColor','none','FaceAlpha',0.6);
+    upDir = dataset_view_frame('reachable_workspace_data_NEW.mat');   upDir = upDir(3,:)';   % colour along the window's up
+    h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut*upDir,'EdgeColor','none','FaceAlpha',0.6);
     
 %     if (homeNewOld == 0)
 %     maxArea = scaler;
@@ -181,7 +187,7 @@ if isfile('reachable_workspace_data_NEW.mat')
     stringMSG = sprintf('...Total elapsed time:  %02d:%06.3f ...\n', floor(tEnd/60), rem(tEnd, 60));
     update_status(stringMSG);
     fprintf('...Total elapsed time:  %02d:%06.3f ...\n', floor(tEnd/60), rem(tEnd, 60));
-    view(315, 12.5);
+    frame_view(gca, 315, 12.5, dataset_view_frame('reachable_workspace_data_NEW.mat'));
     fig = gcf;
     set(fig, 'Units', 'pixels');
     set(fig, 'Position', [100, 100, 1650, 1000]);  % Fixed size, adjust as needed

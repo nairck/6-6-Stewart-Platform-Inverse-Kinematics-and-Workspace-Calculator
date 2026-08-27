@@ -10,8 +10,10 @@ fmt = '%.3f';
 % Base & platform XY coordinates
 xsi = cellfun(getVal, arrayfun(@(i) sprintf('base%dx', i), 1:6, 'UniformOutput', false));
 ysi = cellfun(getVal, arrayfun(@(i) sprintf('base%dy', i), 1:6, 'UniformOutput', false));
+zsi = cellfun(getVal, arrayfun(@(i) sprintf('base%dz', i), 1:6, 'UniformOutput', false));
 xmi = cellfun(getVal, arrayfun(@(i) sprintf('plat%dx', i), 1:6, 'UniformOutput', false));
 ymi = cellfun(getVal, arrayfun(@(i) sprintf('plat%dy', i), 1:6, 'UniformOutput', false));
+zmi = cellfun(getVal, arrayfun(@(i) sprintf('plat%dz', i), 1:6, 'UniformOutput', false));
 
 % New posture = old + delta
 roll  = getVal('roll_old')   + getVal('rolldelta');
@@ -21,16 +23,11 @@ px    = getVal('Pxval_old')  + getVal('Pxvaldelta');
 py    = getVal('Pyval_old')  + getVal('Pyvaldelta');
 pz    = getVal('Pzval_old')  + getVal('Pzvaldelta');
 
-% Heights
-baseZ     = getVal('baseZ');
-platformZ = getVal('platZheight');
-
-% Compute inverse kinematics
+% Compute inverse kinematics (every joint has its own X, Y, Z)
 inverse_solution = stew_inverse( ...
-    xsi, ysi, xmi, ymi, ...
+    xsi, ysi, zsi, xmi, ymi, zmi, ...
     roll, pitch, yaw, ...
-    px, py, pz, ...
-    baseZ, platformZ);
+    px, py, pz, rpy_axes_of(pi));
 
 % Update leg lengths (1–6)
 legs_new = inverse_solution(1:6);

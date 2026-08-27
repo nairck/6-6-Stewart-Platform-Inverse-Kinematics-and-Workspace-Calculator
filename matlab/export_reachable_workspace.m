@@ -28,7 +28,8 @@ shp = alphaShape(allPts(:,1), allPts(:,2), allPts(:,3), alphaVal);
 
 figure(501); clf; hold on;
 tiledlayout(1,1,'Padding','loose','TileSpacing','loose');    nexttile; hold on;      set(gcf,'Renderer','opengl');
-h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut(:,3),'EdgeColor','none','FaceAlpha',0.6);
+upDir = dataset_view_frame(fname);   upDir = upDir(3,:)';   % colour along the window's up
+h = patch('Vertices',ptsOut,'Faces',tri,'FaceColor','interp',  'FaceVertexCData',ptsOut*upDir,'EdgeColor','none','FaceAlpha',0.6);
 
 maxArea = scaler;
 V = ptsOut; F = h.Faces;    v1 = V(F(:,2),:) - V(F(:,1),:);    v2 = V(F(:,3),:) - V(F(:,1),:);    A  = 0.5 * sqrt( sum( cross(v1,v2,2).^2, 2 ) );  % M×1
@@ -69,7 +70,8 @@ disp(stringMSG)
 stringMSG = sprintf('...Total elapsed time:  %02d:%06.3f ...\n', floor(tEnd/60), rem(tEnd, 60));
 update_status(stringMSG);
 fprintf('...Total elapsed time:  %02d:%06.3f ...\n', floor(tEnd/60), rem(tEnd, 60));
-view(315, 12.5);
+viewD = dataset_view_frame(fname);          % the sketch's "up", stored with the data
+frame_view(gca, 315, 12.5, viewD);
 
 
 
@@ -213,7 +215,7 @@ temp = 360/ANGULAR_STEP_SIZE;
 for i = 1:temp:360
     ii = ii + 1;
     figure(501);
-    view(315+i-temp, 12.5);
+    frame_view(gca, 315+i-temp, 12.5, viewD);
 %     view(ax1, [315+i, 12.5]);
 %     view(ax2,[315+i, 12.5]);
     drawnow;
