@@ -192,7 +192,7 @@ leg relative to the leg that turns the most. For the row's axis the platform is 
 about the origin's point (a translation along the axis, or a Rodrigues rotation about it), the leg
 lengths are differenced centrally, converted to actuator degrees through the lead, and normalized:
 
-<h3 align="center"><code>ΔL = ½·[L(+δ) − L(−δ)]</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>Δθ = ΔL·360 / lead</code>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;<code>ratio = Δθ / max|Δθ|</code></h3>
+<h3 align="center"><code>ΔL = ½·[L(+δ) − L(−δ)]</code>&emsp;&emsp;&emsp;&emsp;<code>Δθ = ΔL·360 / lead</code>&emsp;&emsp;&emsp;&emsp;<code>ratio = Δθ / max|Δθ|</code></h3>
 
 The lead cancels in the ratio, so the entries are independent of the thread pitch; the sign gives the
 direction of turn, positive extending the leg. Each row carries a **Turn [°]** box: type the turn you
