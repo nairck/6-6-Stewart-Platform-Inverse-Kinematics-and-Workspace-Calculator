@@ -32,19 +32,19 @@ In MATLAB, from the project's `Hexapod Calculator ...` folder:
 ```matlab
 cfg = coder.config('dll');          % or 'lib' for a static library
 cfg.GenCodeOnly = false;
-args = {zeros(1,6), zeros(1,6), zeros(1,6), zeros(1,6), ...
-        0, 0, 0, 0, 0, 0, 0, 0};    % xsi ysi xmi ymi roll pitch yaw px py pz baseZ platformZ
+args = {zeros(1,6), zeros(1,6), zeros(1,6), zeros(1,6), zeros(1,6), zeros(1,6), ...
+        0, 0, 0, 0, 0, 0};    % xsi ysi zsi xmi ymi zmi roll pitch yaw px py pz
 codegen stew_inverse_ws -config cfg -args args
 ```
 
 This produces a standalone `stew_inverse_ws.c/.h` with the clean signature:
 
 ```c
-void stew_inverse_ws(const double xsi[6], const double ysi[6],
-                     const double xmi[6], const double ymi[6],
+void stew_inverse_ws(const double xsi[6], const double ysi[6], const double zsi[6],
+                     const double xmi[6], const double ymi[6], const double zmi[6],
                      double roll, double pitch, double yaw,
                      double px, double py, double pz,
-                     double baseZ, double platformZ, double Legs[6]);
+                     double Legs[6]);
 ```
 
 Copy the generated `*.c` / `*.h` files into this `native/` folder, then build

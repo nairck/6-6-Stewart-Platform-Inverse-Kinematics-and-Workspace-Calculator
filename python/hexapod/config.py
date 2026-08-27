@@ -4,15 +4,50 @@ Everything here is a direct transcription of the original MATLAB source
 (MAIN_GUI.m and load_data.m) so behaviour and geometry stay faithful.
 """
 
-# ---- Main window size (MATLAB figure was Position [.. .. 720 710]) ----
-WIN_W = 720
-WIN_H = 710
+# ---- Main window size ----
+# The original MATLAB figure was 720 x 710.  Adding a Z column to the base and
+# platform joint tables (2 x 75 px) widened the window to 870, and removing the
+# plane-height rows (Base Z / Platform Z / bench thickness; two 25 px rows)
+# shortened it to 660.  Everything right of the joint tables sits 150 px
+# further right and everything above the ZPD-Leg-Length row sits 50 px lower
+# than in the original layout (all positions below are in MATLAB coordinates,
+# origin bottom-left, converted with m2q()).
+WIN_W = 870
+WIN_H = 660
+RIGHT_SHIFT = 150            # x shift of the right-hand block (Z columns added)
+TOP_SHIFT = -50              # y shift of the top block (two rows removed)
 
-# ---- Embedded 3D platform axes (MATLAB: axes Position [360 20 350 350]) ----
-PLOT_RECT_MATLAB = (360, 20, 350, 350)
+# ---- Embedded 3D platform sketch ----
+# The drawing region (everything drawn outside it is clipped): from just
+# inside the "(turns + rem. ang.)" column on the left to the right block's
+# right edge (854) on the right, from above the "Colour Theme" label (58) to
+# below the Leg Actuator Lead row (343).  The transparent sketch sits behind
+# every control, so the labels and buttons inside this rectangle stay on top;
+# the drawing is centred in it.
+PLOT_RECT_MATLAB = (376, 58, 478, 285)
 
-# ---- The 71 numeric tags, in the EXACT order used by formdata.txt ----
-TAGS = [
+# ---- The 76 numeric tags, in the EXACT order used by formdata.txt ----
+# Every base and platform joint has its own X, Y, Z (no plane-height
+# assumption).  The tag order is the file order.
+TAGS = []
+for _i in range(1, 7):
+    TAGS += [f"base{_i}x", f"base{_i}y", f"base{_i}z"]
+for _i in range(1, 7):
+    TAGS += [f"plat{_i}x", f"plat{_i}y", f"plat{_i}z"]
+TAGS += [
+    "rollmin", "rollmax", "pitchmin", "pitchmax", "yawmin", "yawmax",
+    "pxmin", "pxmax", "pymin", "pymax", "pzmin", "pzmax",
+    "leg1_old", "leg2_old", "leg3_old", "leg4_old", "leg5_old", "leg6_old",
+    "leg1", "leg2", "leg3", "leg4", "leg5", "leg6",
+    "roll_old", "pitch_old", "yaw_old", "Pxval_old", "Pyval_old", "Pzval_old",
+    "roll", "pitch", "yaw", "Pxval", "Pyval", "Pzval",
+    "jointmin", "jointmax", "zpdLegLength", "actuatorLead",
+]
+
+# ---- The previous (69-tag) file layout, still READ and converted forward ----
+# It carried a single Base Z / Platform Z plane height for all six joints plus
+# three bench-related values that no longer exist.  See settings_io.
+LEGACY_TAGS = [
     "base1x", "base1y", "base2x", "base2y", "base3x", "base3y", "base4x", "base4y",
     "base5x", "base5y", "base6x", "base6y", "baseZ",
     "plat1x", "plat1y", "plat2x", "plat2y", "plat3x", "plat3y", "plat4x", "plat4y",
@@ -27,25 +62,87 @@ TAGS = [
     "platToBenchBottomZ", "actuatorLead",
 ]
 
-# ---- Default values (verbatim from load_data.m) used only to CREATE a fresh file ----
-DEFAULT_VALUES = [
-    -1487.250, -108.110, -1487.250, 158.110, -390.100, 533.220,
-    -159.550, 400.110, -159.550, -350.110, -390.100, -483.220,
-    -375.910,
-    -1487.250, -3.100, -1487.250, 53.100, -299.160, 480.720,
-    -250.490, 452.620, -250.490, -402.620, -299.160, -430.720,
-    -263.444,
+# ---- Default values used only to CREATE a fresh file ----
+# The original load_data.m defaults with the plane heights (base -375.910,
+# platform -263.444) expanded to every joint.
+_BASE_XY = [(-1487.250, -108.110), (-1487.250, 158.110), (-390.100, 533.220),
+            (-159.550, 400.110), (-159.550, -350.110), (-390.100, -483.220)]
+_PLAT_XY = [(-1487.250, -3.100), (-1487.250, 53.100), (-299.160, 480.720),
+            (-250.490, 452.620), (-250.490, -402.620), (-299.160, -430.720)]
+DEFAULT_VALUES = []
+for _x, _y in _BASE_XY:
+    DEFAULT_VALUES += [_x, _y, -375.910]
+for _x, _y in _PLAT_XY:
+    DEFAULT_VALUES += [_x, _y, -263.444]
+DEFAULT_VALUES += [
     -2.650, 2.650, -1.150, 1.150, -1.500, 1.500,
     -28.000, 28.000, -28.000, 28.000, -20.000, 20.000,
     153.869, 153.869, 153.867, 153.870, 153.870, 153.867,
     153.869, 153.869, 153.867, 153.870, 153.870, 153.867,
     0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
     0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
-    -124.000, -18.000, 18.000, 110.000, 153.866, 29.444, 3.000,
+    -18.000, 18.000, 153.866, 3.000,
 ]
+assert len(TAGS) == len(DEFAULT_VALUES) == 76
 
 DEFAULT_NAME = "Hexapod Inverse Kinematics and Workspace Solver"
 SETTINGS_FILE = "formdata.txt"
+
+# ---- Origins / points of interest ----
+# Origin 1 is the reference frame the base/platform joints are entered in (the
+# input focus).  Additional origins are points of interest given as an XYZ
+# offset from Origin 1; selecting one re-expresses the whole problem about that
+# point (see kinematics.shift_frame).  The name limit is shared with the
+# formdata.txt parser and the dialog.
+ORIGIN_NAME_MAX = 22
+
+
+def wrap_button_name(name, max_lines=2, target=11):
+    """Split an origin name over at most `max_lines` lines for the two- or
+    three-line buttons, breaking only at spaces and never mid-word.
+
+    Greedy fill to about `target` characters a line; if the words cannot be
+    split into `max_lines` lines (one very long word, or no spaces at all) the
+    name is returned on a single line and the caller's fit-to-width shrinks
+    the font instead.  Always returns 1..max_lines lines and never drops text.
+    """
+    name = str(name).strip()
+    if not name or len(name) <= target or " " not in name:
+        return [name]
+    words = name.split()
+    lines = []
+    cur = ""
+    for w in words:
+        trial = w if not cur else cur + " " + w
+        if cur and len(trial) > target and len(lines) < max_lines - 1:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = trial
+    lines.append(cur)
+    return lines if len(lines) <= max_lines else [name]
+DEFAULT_ORIGIN_NAME = "Origin 1"
+MAX_ORIGINS = 12            # rows the origin dialog will hold (keeps it on-screen)
+
+# "Current Origin: <name>" button: same width as the pose buttons, twice their
+# height (two 25 px buttons + the 2 px gap), top edge level with the
+# "INPUTS - Change to New Pose:" header (its top is 206 + 20 = 226).
+ORIGIN_BTN_RECT_MATLAB = (247, 174, 112, 52)
+# "Change Coords." button: single height, directly below the origin button
+# (174..226) at the 2 px pitch of the other button stacks: 147..172.
+COORDS_BTN_RECT_MATLAB = (247, 147, 112, 25)
+
+# ---- Coordinate-axis remapping (Change Coords. dialog) ----
+# The six signed axis choices offered for each current axis, in display order.
+AXIS_OPTIONS = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+
+# ---- Rotation-angle axes (also in the Change Coords. dialog) ----
+# Which coordinate axis roll, pitch and yaw rotate about, as a three-letter
+# string (roll axis, pitch axis, yaw axis).  Only the cyclic assignments are
+# allowed so the three axes, in that order, always form a right-handed triad.
+# Stored in formdata.txt as "rpy_axes = 'ZXY'" when not the default.
+RPY_AXES_OPTIONS = ("XYZ", "YZX", "ZXY")
+RPY_AXES_DEFAULT = "XYZ"
 
 # ---- Colours (the six MATLAB default line colours used for the legs) ----
 LEG_COLORS = ["#0072BD", "#D95319", "#EDB120", "#7E2F8E", "#77AC30", "#4DBEEE"]

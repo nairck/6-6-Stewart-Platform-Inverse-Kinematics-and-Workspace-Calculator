@@ -71,15 +71,13 @@ def _build_surface(data, alpha):
         return pv.PolyData(verts, f)
 
 
-def _set_view(plotter, azimuth_deg, elevation_deg):
-    """Point the camera at the data centre from a clean (azimuth, elevation).
-
-    azimuth is measured CCW from +X in the XY plane and elevation above the XY
-    plane (so e.g. (-45, 22.5) is an isometric corner tilted 22.5 deg down), with
-    +Z up.  Setting the camera position directly (then reset_camera to frame the
-    data) is far more predictable than chaining azimuth/elevation increments.
-    """
+def _frame_vectors(plotter, direction_disp, up_disp, frame):
+    """Camera position / focal point / up for a viewing direction and up vector
+    given in the DISPLAY frame (the sketch's orientation), converted to the
+    data axes with the dataset's view frame D (display = D data, so data =
+    D^T display)."""
     import numpy as np
+    D = np.asarray(frame if frame is not None else np.eye(3), float)
     try:
         b = plotter.bounds
         cx, cy, cz = 0.5 * (b[0] + b[1]), 0.5 * (b[2] + b[3]), 0.5 * (b[4] + b[5])
@@ -87,15 +85,80 @@ def _set_view(plotter, azimuth_deg, elevation_deg):
     except Exception:
         cx = cy = cz = 0.0
         span = 1.0
-    az = np.radians(azimuth_deg)
-    el = np.radians(elevation_deg)
-    d = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    d = D.T @ np.asarray(direction_disp, float)
+    up = D.T @ np.asarray(up_disp, float)
     pos = np.array([cx, cy, cz]) + d * span * 2.5
+    return tuple(pos), (cx, cy, cz), tuple(up)
+
+
+def _apply_camera(plotter, direction_disp, up_disp, frame):
     try:
-        plotter.camera_position = [tuple(pos), (cx, cy, cz), (0.0, 0.0, 1.0)]
+        plotter.camera_position = list(_frame_vectors(plotter, direction_disp, up_disp, frame))
         plotter.reset_camera()
     except Exception:
         pass
+
+
+def _set_view(plotter, azimuth_deg, elevation_deg, frame=None):
+    """Point the camera at the data centre from a clean (azimuth, elevation).
+
+    azimuth is measured CCW from +X in the XY plane and elevation above the XY
+    plane (so e.g. (-45, 22.5) is an isometric corner tilted 22.5 deg down), with
+    +Z up, all in the DISPLAY frame: `frame` (the dataset's view frame D) maps
+    that to the data axes, so after a Change Coords. or a rotated origin the
+    window's "up" is still the sketch's up.  Setting the camera position
+    directly (then reset_camera to frame the data) is far more predictable than
+    chaining azimuth/elevation increments.
+    """
+    import numpy as np
+    az = np.radians(azimuth_deg)
+    el = np.radians(elevation_deg)
+    d = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    _apply_camera(plotter, d, (0.0, 0.0, 1.0), frame)
+
+
+# The toolbar's standard views, in the DISPLAY frame: name -> (camera side
+# vector, up vector).  The axis in each button's label is rewritten to the data
+# axis that side corresponds to under the dataset's view frame.
+_PRESET_VIEWS = {
+    "Top":       ((0.0, 0.0, 1.0),  (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
+    "Bottom":    ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "Front":     ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
+    "Back":      ((0.0, 1.0, 0.0),  (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+    "Left":      ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0)),
+    "Right":     ((1.0, 0.0, 0.0),  (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    "Isometric": ((1.0, 1.0, 1.0),  (0.0, 0.0, 1.0), None),
+}
+
+
+def _rewire_preset_views(plotter, frame):
+    """Make the toolbar's Top / Bottom / Front / Back / Left / Right / Isometric
+    buttons act in the display frame and label them with the data axis they
+    look along.  Only done when the frame is not the identity, so the default
+    behaviour of the toolbar is untouched otherwise."""
+    import numpy as np
+    from . import kinematics as K
+    D = np.asarray(frame, float)
+    if np.allclose(D, np.eye(3)):
+        return
+    tb = getattr(plotter, "default_camera_tool_bar", None)
+    if tb is None:
+        return
+    for act in tb.actions():
+        text = (act.text() or "").strip()
+        name = text.split(" ")[0] if text else ""
+        if name not in _PRESET_VIEWS:
+            continue
+        side, up, label_vec = _PRESET_VIEWS[name]
+        try:
+            act.triggered.disconnect()
+        except Exception:
+            pass
+        act.triggered.connect(lambda *_, s=side, u=up: (_apply_camera(plotter, s, u, D),
+                                                         plotter.render()))
+        if label_vec is not None:
+            data_vec = D.T @ np.asarray(label_vec, float)
+            act.setText(f"{name} ({K.axis_label(data_vec)})")
 
 
 def _theme_colors():
@@ -131,9 +194,12 @@ def _populate(plotter, data, kind, alpha, labels):
     surf = _build_surface(data, alpha)                # clean structured surface
     col = _theme_colors()
 
-    # lit, turbo-coloured, semi-transparent surface (== MATLAB patch + shading interp)
+    # lit, turbo-coloured, semi-transparent surface (== MATLAB patch + shading interp).
+    # The colour runs along the window's "up" (the view frame's third row, so
+    # red is highest and blue lowest in that view, whatever the data axes).
     if surf.n_points:
-        surf["height"] = surf.points[:, 2]
+        up = np.asarray(W.dataset_view_frame(data), float)[2]
+        surf["height"] = surf.points @ up
     plotter.add_mesh(surf, scalars="height" if surf.n_points else None,
                      cmap="turbo", opacity=0.6, smooth_shading=True,
                      show_scalar_bar=False, lighting=True, specular=0.4,
@@ -158,8 +224,19 @@ def _populate(plotter, data, kind, alpha, labels):
     txt = (f"{lx} = [{xl[0]:.3f}, {xl[1]:.3f}]\n"
            f"{ly} = [{yl[0]:.3f}, {yl[1]:.3f}]\n"
            f"{lz} = [{zl[0]:.3f}, {zl[1]:.3f}]")
+    # datasets computed about a point of interest carry its name (see
+    # main_window._on_sweep_done); older / external datasets simply have none.
+    origin = W.dataset_origin_name(data)
+    if origin:
+        txt += f"\nOrigin: {origin}"
     txt_actor = plotter.add_text(txt, position="upper_right", font_size=11, color=col["fg"])
-    plotter.add_axes(xlabel=lx, ylabel=ly, zlabel=lz)
+    # orientation widget (lower left): short labels so the text cannot collide
+    # with the arrows; the full labels with units stay on the grid axes
+    sx, sy, sz = _short_labels(kind)
+    try:
+        plotter.add_axes(xlabel=sx, ylabel=sy, zlabel=sz, label_size=(0.28, 0.12))
+    except TypeError:
+        plotter.add_axes(xlabel=sx, ylabel=sy, zlabel=sz)
 
     plotter.set_background(col["bg"])
     try:
@@ -218,6 +295,12 @@ def _labels_for(kind):
     return ("Roll [deg]", "Pitch [deg]", "Yaw [deg]")
 
 
+def _short_labels(kind):
+    if kind == "reachable":
+        return ("X", "Y", "Z")
+    return ("Roll", "Pitch", "Yaw")
+
+
 def _install_menu(plotter, reset_view, default_parallel=True):
     """Replace the default menu with a clean File/View menu.
 
@@ -236,10 +319,12 @@ def _install_menu(plotter, reset_view, default_parallel=True):
         act_shot = QAction("Save Screenshot (PNG / JPG)\u2026", win)
 
         def save_shot():
+            from . import savedir
             fn, _ = QFileDialog.getSaveFileName(
-                win, "Save screenshot", "workspace.png",
+                win, "Save screenshot", savedir.start_path("workspace.png"),
                 "PNG image (*.png);;JPEG image (*.jpg *.jpeg)")
             if fn:
+                savedir.remember(fn)
                 try:
                     plotter.screenshot(fn)
                     print(f"screenshot saved: {fn}")
@@ -292,6 +377,10 @@ def show_interactive(data, kind=None, alpha=None, res_label=None):
         title = f"{base} - {res_label.upper()} Resolution"
     else:
         title = base
+    origin = W.dataset_origin_name(data)
+    if origin:
+        title += f" - Origin: {origin}"
+    frame = W.dataset_view_frame(data)
 
     # Build our own menu (menu_bar=False) so the default 'Export to VTKjs' is
     # gone; keep the toolbar (camera tools); drop the scene-tree editor panel.
@@ -302,11 +391,12 @@ def show_interactive(data, kind=None, alpha=None, res_label=None):
         plotter = BackgroundPlotter(title=title, window_size=(1100, 750))
 
     _populate(plotter, data, kind, alpha, _labels_for(kind))
-    _set_view(plotter, *view)
+    _set_view(plotter, *view, frame=frame)
     try:
         plotter.enable_parallel_projection()
     except Exception:
         pass
+    _rewire_preset_views(plotter, frame)
 
     # Remove the "Save Camera Position" / "Clear Cameras" toolbar (keep the
     # standard camera-view buttons).
@@ -320,7 +410,7 @@ def show_interactive(data, kind=None, alpha=None, res_label=None):
 
     def reset_view():
         # Go back to the exact default isometric view the window started at.
-        _set_view(plotter, *view)
+        _set_view(plotter, *view, frame=frame)
         try:
             plotter.enable_parallel_projection()
             plotter.render()
@@ -377,6 +467,7 @@ def export_png_series(data, out_dir, n_images, kind=None, alpha=None, progress=N
 
     plotter = pv.Plotter(off_screen=True, window_size=list(config.EXPORT_SIZE))
     _populate(plotter, data, kind, alpha, _labels_for(kind))
+    frame = W.dataset_view_frame(data)
 
     n_images = int(n_images)
     step = 360.0 / n_images
@@ -384,7 +475,7 @@ def export_png_series(data, out_dir, n_images, kind=None, alpha=None, progress=N
     for i in range(n_images):
         # MATLAB: for i = 1:360/N:360, view(base_az + i, el) -> N views over a full turn
         az = base_view[0] + i * step
-        _set_view(plotter, az, base_view[1])
+        _set_view(plotter, az, base_view[1], frame=frame)
         fname = os.path.join(out_dir, f"{kind}_workspace_{i + 1:03d}.png")
         plotter.screenshot(fname)
         paths.append(fname)

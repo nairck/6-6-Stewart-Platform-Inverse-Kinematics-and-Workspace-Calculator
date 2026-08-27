@@ -1,8 +1,11 @@
 """The main application window - a faithful port of MAIN_GUI.m.
 
-Every control is placed at the original MATLAB pixel position (converted from
-MATLAB's bottom-left origin via config.m2q), so the geometry is pixel-faithful.
-Colours/fonts are cleaned up but the layout matches the original 720x710 window.
+Every control is placed at a MATLAB pixel position (converted from MATLAB's
+bottom-left origin via config.m2q), so the geometry is pixel-faithful to the
+MATLAB program.  Relative to the original 720x710 window the joint tables have a
+Z column (window 150 px wider, right-hand block shifted right by that amount)
+and the plane-height rows are gone (window 50 px shorter, top block shifted
+down); see config.WIN_W / WIN_H / RIGHT_SHIFT / TOP_SHIFT.
 
 Added on top of the MATLAB feature set (as requested): a single Console dock
 below the GUI that mirrors everything printed to stdout/stderr.  It is anchored
@@ -16,9 +19,9 @@ import shutil
 import traceback
 import numpy as np
 
-from PySide6.QtCore import Qt, QThread, QObject, Signal, Slot, QLocale
+from PySide6.QtCore import Qt, QThread, QObject, Signal, Slot
 from PySide6.QtGui import (
-    QDoubleValidator, QFont, QTextCursor, QFontMetrics, QIcon,
+    QFont, QTextCursor, QFontMetrics, QIcon,
     QShortcut, QKeySequence,
 )
 from PySide6.QtWidgets import (
@@ -29,6 +32,8 @@ from PySide6.QtWidgets import (
 from . import config
 from .config import m2q
 from . import settings_io
+from .widgets import NumberLineEdit
+from . import savedir
 from . import kinematics
 from . import workspace as W
 from . import workspace_view
@@ -145,6 +150,13 @@ class HexapodMainWindow(QMainWindow):
         self._last_reach = None    # last computed reachable dataset (NEW)
         self._last_orient = None   # last computed orientation dataset (NEW)
         self._adjust_totals = {}   # cumulative +/- offset per coordinate column
+        # Origins / points of interest.  Every displayed coordinate and pose is
+        # expressed in the frame of the ACTIVE origin; Origin 1 (index 1) is
+        # the reference frame the joints were entered in.
+        self.origins = settings_io.default_origins()
+        self.origin_active = 1
+        self.rpy_axes = config.RPY_AXES_DEFAULT      # which axis roll / pitch / yaw rotate about
+        self.adj_config = settings_io.default_adj_config(1)   # Incremental Adj. Table set-up
 
         # The fixed-size GUI panel that holds every MATLAB-positioned control.
         self.gui_panel = QWidget()
@@ -184,14 +196,22 @@ class HexapodMainWindow(QMainWindow):
             _sc = QShortcut(QKeySequence(_key), self)
             _sc.setContext(Qt.WindowShortcut)
             _sc.activated.connect(lambda: self.solve_inverse())
+        # Escape behaves exactly like the Quit button (and the title-bar X):
+        # quits straight away when nothing has changed since the last Save
+        # Everything (or since start-up), otherwise asks save / don't save / cancel.
+        _esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        _esc.setContext(Qt.WindowShortcut)
+        _esc.activated.connect(self.on_quit)
+        self._saved_signature = None      # state at start-up / last save (dirty check)
+        self._quit_confirmed = False      # set once on_quit decided to close
 
         _slog.log("  __init__: loading settings (formdata.txt)")
         self._load_settings()
         _slog.log("  __init__: settings loaded")
         self._apply_edit_locks(zpd_unlocked=False, constraints_unlocked=False)
-        self._recompute_bench_z()
         _slog.log("  __init__: initial solve_inverse")
         self.solve_inverse(animate=False)
+        self._saved_signature = self._state_signature()   # "nothing changed since start-up"
         print("Ready. Hexapod calculator started.")
         _slog.log("  __init__: done")
 
@@ -233,11 +253,14 @@ class HexapodMainWindow(QMainWindow):
         """
         if pad is None:
             pad = 24 if isinstance(widget, QPushButton) else 6
+        # Multi-line text (e.g. the two-line origin button): fit the widest line.
+        lines = str(text).split("\n") or [""]
         f = widget.font()
         size = float(max_pt)
         f.setPointSizeF(size)
         fm = QFontMetrics(f)
-        while size > min_pt and fm.horizontalAdvance(text) > max(width - pad, 1):
+        widest = lambda m: max(m.horizontalAdvance(ln) for ln in lines)
+        while size > min_pt and widest(fm) > max(width - pad, 1):
             size -= 0.5
             f.setPointSizeF(size)
             fm = QFontMetrics(f)
@@ -251,13 +274,10 @@ class HexapodMainWindow(QMainWindow):
         """Create a value box.  `enable` mirrors MATLAB's Enable property:
         'on' = editable, 'inactive' = shows its colour but not editable,
         'off' = disabled/greyed."""
-        e = QLineEdit("0.000", self.canvas_parent)
+        # NumberLineEdit: standard copy / cut / paste; a pasted value is rounded
+        # to three decimals (see widgets.py)
+        e = NumberLineEdit("0.000", self.canvas_parent) if validator else QLineEdit("0.000", self.canvas_parent)
         e.setGeometry(*m2q(*mpos))
-        if validator:
-            v = QDoubleValidator(-1e9, 1e9, 3, e)
-            v.setLocale(QLocale(QLocale.C))
-            v.setNotation(QDoubleValidator.StandardNotation)
-            e.setValidator(v)
         e.setReadOnly(enable != "on")
         self.fields[tag] = e
         self.bg[tag] = bg
@@ -282,14 +302,19 @@ class HexapodMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def _build_headers(self):
-        self._label("Zero-Displacement Configuration  [mm]", (5, 685, 290, 18),
+        RS, TS = config.RIGHT_SHIFT, config.TOP_SHIFT
+        self._label("Zero-Displacement Configuration  [mm]", (5, 685 + TS, 290, 18),
                     bold=True, size=8, color=config.HEADER_COLOR, fit=True)
-        self._label("Workspace Search Limits and Constraints", (467, 630, 237, 18),
+        self._label("Workspace Search Limits and Constraints", (467 + RS, 630 + TS, 237, 18),
                     bold=True, size=8, color=config.HEADER_COLOR, fit=True)
-        # column headers + adjust buttons
-        for s, x in (("xsi", 80), ("ysi", 155), ("xmi", 312), ("ymi", 382)):
+        # column headers + adjust buttons: base x/y/z at 55/130/205, platform
+        # x/y/z at 360/434/509 (the original x/y columns plus a 75 px Z column
+        # on each side; the platform block sits 75 px further right).
+        for s, x in (("xsi", 80), ("ysi", 155), ("zsi", 230),
+                     ("xmi", 387), ("ymi", 457), ("zmi", 532)):
             self._label(s, (x, 585, 20, 12))
-        for col, x in (("xsi", 102), ("ysi", 177), ("xmi", 334), ("ymi", 404)):
+        for col, x in (("xsi", 102), ("ysi", 177), ("zsi", 252),
+                       ("xmi", 409), ("ymi", 479), ("zmi", 554)):
             b = QPushButton("\u00b1", self.canvas_parent)
             b.setGeometry(*m2q(x, 581, 20, 17))
             b.clicked.connect(lambda _=False, c=col: self.open_adjust(c))
@@ -297,21 +322,12 @@ class HexapodMainWindow(QMainWindow):
             setattr(self, f"adj_{col}", b)
 
     def _build_zero_disp(self):
-        rows = [
-            ("Base Z Coordinate:", "baseZ", (28, 661, 100, 13), (128, 657, 70, 20)),
-            ("Platform Z Coordinate:", "platZheight", (10, 637, 120, 13), (128, 632, 70, 20)),
-            ("ZPD Leg Length:", "zpdLegLength", (24, 612, 120, 13), (128, 607, 70, 20)),
-            ("Bench Top Thickness:", "benchThickness", (236, 661, 150, 13), (369, 657, 70, 20)),
-            # These two labels are long, so their boxes are narrower and
-            # right-justified to the Bench-Top-Thickness box's right edge (439).
-            ("Platform Plane to Benchbottom:", "platToBenchBottomZ", (210, 637, 172, 13), (383, 632, 56, 20)),
-            ("Calculated Focus to Benchtop Z:", "benchZheight", (207, 612, 175, 13), (383, 607, 56, 20)),
-        ]
-        for text, tag, lpos, epos in rows:
-            self._label(text, lpos)
-            self._edit(tag, epos, enable="off")   # locked/greyed until Edit-ZPD is on
-        # benchZheight is recomputed when the Edit-ZPD lock is toggled off and on
-        # adjust, exactly as in the original (field edits alone do not recompute).
+        # The plane-height rows (Base Z, Platform Z, bench thickness, platform
+        # plane to bench bottom, focus to bench top) are gone: every joint now
+        # has its own Z in the tables below.  Only the ZPD leg length remains,
+        # on the single row directly under the section header.
+        self._label("ZPD Leg Length:", (24, 612, 120, 13))
+        self._edit("zpdLegLength", (128, 607, 70, 20), enable="off")   # locked until Edit-ZPD is on
 
     def _build_coordinates(self):
         for i in range(1, 7):
@@ -320,36 +336,40 @@ class HexapodMainWindow(QMainWindow):
             self._label(f"Base {i}:", (5, yT, 50, 12))
             self._edit(f"base{i}x", (55, yE, 70, 20), enable="off")
             self._edit(f"base{i}y", (130, yE, 70, 20), enable="off")
-            self._label(f"Platform {i}:", (225, yT, 60, 12))
-            self._edit(f"plat{i}x", (285, yE, 70, 20), enable="off")
-            self._edit(f"plat{i}y", (359, yE, 70, 20), enable="off")
+            self._edit(f"base{i}z", (205, yE, 70, 20), enable="off")
+            self._label(f"Platform {i}:", (300, yT, 60, 12))
+            self._edit(f"plat{i}x", (360, yE, 70, 20), enable="off")
+            self._edit(f"plat{i}y", (434, yE, 70, 20), enable="off")
+            self._edit(f"plat{i}z", (509, yE, 70, 20), enable="off")
         # NOTE: editing coordinates does not redraw until "Solve Inverse
         # Kinematics" is pressed, matching the original 'base'/'plat' callbacks.
 
     def _build_constraints(self):
         # Whole section left-justified to LX (the "Leg Length" left edge); min/max
         # columns at 560 / 634; headers centered over their columns.
-        LX = 467
-        self._label("Constraints", (LX, 579, 130, 18), bold=True, size=8, color=config.HEADER_COLOR)
-        self._label("min", (560, 585, 70, 12), align=Qt.AlignHCenter)
-        self._label("max", (634, 585, 70, 12), align=Qt.AlignHCenter)
-        C = [("Roll [\u00b0 about x]:", "roll", 563, 560),
-             ("Pitch [\u00b0 about y]:", "pitch", 543, 538),
-             ("Yaw [\u00b0 about z]:", "yaw", 521, 516)]
+        RS, TS = config.RIGHT_SHIFT, config.TOP_SHIFT
+        LX = 467 + RS
+        MN, MX = 560 + RS, 634 + RS
+        self._label("Constraints", (LX, 579 + TS, 130, 18), bold=True, size=8, color=config.HEADER_COLOR)
+        self._label("min", (MN, 585 + TS, 70, 12), align=Qt.AlignHCenter)
+        self._label("max", (MX, 585 + TS, 70, 12), align=Qt.AlignHCenter)
+        C = [("Roll", "roll", 563, 560), ("Pitch", "pitch", 543, 538), ("Yaw", "yaw", 521, 516)]
+        self._angle_labels = {}
         for text, tag, ty, ey in C:
-            self._label(text, (LX, ty, 93, 13))
-            self._edit(f"{tag}min", (560, ey, 70, 20), enable="off")
-            self._edit(f"{tag}max", (634, ey, 70, 20), enable="off")
+            self._angle_labels[tag] = self._label(f"{text} [\u00b0 about x]:", (LX, ty + TS, 93, 13))
+            self._edit(f"{tag}min", (MN, ey + TS, 70, 20), enable="off")
+            self._edit(f"{tag}max", (MX, ey + TS, 70, 20), enable="off")
+        self._update_angle_labels()
         D = [("X [mm]:", "px", 499, 494), ("Y [mm]:", "py", 478, 472), ("Z [mm]:", "pz", 455, 450)]
         for text, tag, ty, ey in D:
-            self._label(text, (LX, ty, 93, 13))
-            self._edit(f"{tag}min", (560, ey, 70, 20), enable="off")
-            self._edit(f"{tag}max", (634, ey, 70, 20), enable="off")
-        self._label("Leg Length [mm]:", (LX, 433, 100, 13))
-        self._edit("jointmin", (560, 428, 70, 20), enable="off")
-        self._edit("jointmax", (634, 428, 70, 20), enable="off")
-        self._label("Leg Actuator Lead [mm/rev]:", (LX, 412, 165, 13))
-        self._edit("actuatorLead", (634, 406, 70, 20), bg=YELLOW, enable="off")
+            self._label(text, (LX, ty + TS, 93, 13))
+            self._edit(f"{tag}min", (MN, ey + TS, 70, 20), enable="off")
+            self._edit(f"{tag}max", (MX, ey + TS, 70, 20), enable="off")
+        self._label("Leg Length [mm]:", (LX, 433 + TS, 100, 13))
+        self._edit("jointmin", (MN, 428 + TS, 70, 20), enable="off")
+        self._edit("jointmax", (MX, 428 + TS, 70, 20), enable="off")
+        self._label("Leg Actuator Lead [mm/rev]:", (LX, 412 + TS, 165, 13))
+        self._edit("actuatorLead", (MX, 406 + TS, 70, 20), bg=YELLOW, enable="off")
 
     def _build_outputs(self):
         self._label("OUTPUTS - Leg Lengths [mm] and Angular Adjustment [\u00b0]:",
@@ -381,7 +401,7 @@ class HexapodMainWindow(QMainWindow):
             self.revrem.append(rr)
 
     def _build_inputs(self):
-        self._label("INPUTS - Change to Input Focus Pose:", (5, 206, 270, 20),
+        self._label("INPUTS - Change to New Pose:", (5, 206, 270, 20),
                     bold=True, size=10, color=config.HEADER_COLOR, fit=True)
         for text, x in (("abs. old", 55), ("abs. new", 117), ("rel. delta", 179)):
             self._label(text, (x, 190, 60, 15), align=Qt.AlignHCenter)
@@ -395,19 +415,23 @@ class HexapodMainWindow(QMainWindow):
             self._edit(f"{tag}delta", (179, ey, 60, 20), enable="on")
 
     def _build_buttons(self):
+        RS, TS = config.RIGHT_SHIFT, config.TOP_SHIFT
         btns = [
-            ("Quit", (618, 10, 90, 25), self.on_quit),
-            ("Reset View", (526, 10, 90, 25), lambda: self.platform.reset_view()),
+            # Reset View / Quit stay under the right end of the sketch (shifted).
+            ("Quit", (618 + RS, 10, 90, 25), self.on_quit),
+            ("Reset View", (526 + RS, 10, 90, 25), lambda: self.platform.reset_view()),
+            # centred in the gap between the theme buttons (end 515) and Reset View (676)
+            ("Incremental Adj. Table", (530, 10, 130, 25), self.open_adj_table),
             ("Save Everything", (247, 10, 112, 25), self.save_data),
             ("Update Old Pose", (247, 37, 112, 25), self.overwrite_data),
             ("Zero Input Values", (247, 64, 112, 25), self.zero_data),
             ("Go Home Input Val.", (247, 91, 112, 25), self.home_data),
             ("Solve Inverse Kinematics", (54, 10, 186, 25), lambda: self.solve_inverse()),
-            # Right-side block: left edge LX=467, right edge 704 (= max column).
-            ("Draw Orientation Workspace", (467, 655, 155, 25), lambda: self.open_workspace("orientation")),
-            ("Draw Reachable Workspace", (467, 680, 155, 25), lambda: self.open_workspace("reachable")),
-            ("Export to PNG", (626, 655, 78, 25), lambda: self.export_png("orientation")),
-            ("Export to PNG", (626, 680, 78, 25), lambda: self.export_png("reachable")),
+            # Right-side block: left edge LX = 467 + RS, right edge 704 + RS.
+            ("Draw Orientation Workspace", (467 + RS, 655 + TS, 155, 25), lambda: self.open_workspace("orientation")),
+            ("Draw Reachable Workspace", (467 + RS, 680 + TS, 155, 25), lambda: self.open_workspace("reachable")),
+            ("Export to PNG", (626 + RS, 655 + TS, 78, 25), lambda: self.export_png("orientation")),
+            ("Export to PNG", (626 + RS, 680 + TS, 78, 25), lambda: self.export_png("reachable")),
         ]
         for text, mpos, cb in btns:
             b = QPushButton(text, self.canvas_parent)
@@ -415,6 +439,26 @@ class HexapodMainWindow(QMainWindow):
             self._fit_text(b, text, mpos[2])     # shrink font so text never clips
             b.clicked.connect(cb)
             b.show()
+
+        # "Current Origin: <name>" - double height, top edge level with the
+        # INPUTS header.  Opens the (application-modal) origin dialog.
+        self.origin_btn = QPushButton(self.canvas_parent)
+        self.origin_btn.setGeometry(*m2q(*config.ORIGIN_BTN_RECT_MATLAB))
+        self.origin_btn.setToolTip("Choose / add / edit the origin (point of interest) "
+                                   "that the pose and workspaces are referenced to")
+        self.origin_btn.clicked.connect(self.open_origin_dialog)
+        self.origin_btn.show()
+        self._update_origin_button()
+
+        # "Change Coords." - single height, directly below.  Opens the
+        # (application-modal) axis relabelling dialog.
+        self.coords_btn = QPushButton("Change Coords.", self.canvas_parent)
+        self.coords_btn.setGeometry(*m2q(*config.COORDS_BTN_RECT_MATLAB))
+        self._fit_text(self.coords_btn, "Change Coords.", config.COORDS_BTN_RECT_MATLAB[2])
+        self.coords_btn.setToolTip("Relabel the X, Y, Z axes (right-handed) and remap every "
+                                   "joint, pose, limit and origin accordingly")
+        self.coords_btn.clicked.connect(self.open_coords_dialog)
+        self.coords_btn.show()
 
     def _build_toggles(self):
         # "Colour Theme" buttons sit centred between Save Everything (right edge
@@ -430,16 +474,21 @@ class HexapodMainWindow(QMainWindow):
             tb.show()
             setattr(self, f"theme_{mode}_btn", tb)
 
+        # Double height (two 25 px rows): spans the header row and the ZPD Leg
+        # Length row, top and bottom level with the two Draw-Workspace buttons
+        # (605..655).
+        # Left edge on the "zsi" column header (230), right edge on the platform
+        # Z column (509 + 70 = 579).
         self.editzpd_btn = QPushButton("Edit Zero-Displacement Coordinates", self.canvas_parent)
-        self.editzpd_btn.setGeometry(*m2q(240, 682, 200, 25))
-        self._fit_text(self.editzpd_btn, "Edit Zero-Displacement Coordinates", 200)
+        self.editzpd_btn.setGeometry(*m2q(230, 605, 349, 50))
+        self._fit_text(self.editzpd_btn, "Edit Zero-Displacement Coordinates", 349, max_pt=11)
         self.editzpd_btn.setCheckable(True)
         self.editzpd_btn.toggled.connect(self.on_edit_zpd)
         self.editzpd_btn.show()
 
         # Left-justified to the right-side block (LX=467), full block width.
         self.editcon_btn = QPushButton("Edit Workspace Search Limits and Constraints", self.canvas_parent)
-        self.editcon_btn.setGeometry(*m2q(467, 604, 237, 25))
+        self.editcon_btn.setGeometry(*m2q(467 + config.RIGHT_SHIFT, 604 + config.TOP_SHIFT, 237, 25))
         self._fit_text(self.editcon_btn, "Edit Workspace Search Limits and Constraints", 237)
         self.editcon_btn.setCheckable(True)
         self.editcon_btn.toggled.connect(self.on_edit_constraints)
@@ -531,7 +580,9 @@ class HexapodMainWindow(QMainWindow):
                     " border:1px solid #9a9a9a;}"
                     "QPushButton:hover{background-color:#d6d6d6;}"
                     "QPushButton:pressed{background-color:#c8c8c8;}"
-                    "QPushButton:checked{background-color:#cfe3ff; border:1px solid #5b9bd5;}")
+                    "QPushButton:checked{background-color:#cfe3ff; border:1px solid #5b9bd5;}"
+                    "QPushButton:disabled{background-color:#f0f0f0; color:#9a9a9a;"
+                    " border:1px solid #c8c8c8;}")
         else:
             bcss = ""
         for b in self.gui_panel.findChildren(QPushButton):
@@ -614,14 +665,36 @@ class HexapodMainWindow(QMainWindow):
                     try:
                         shutil.copyfile(bundled, path)
                     except Exception:
-                        pass                    # not fatal - we still have the values
+                        pass                    # not fatal: the values are already loaded
 
         if status[0] == "ok":
-            values, name = status[1], status[2]
+            values, name, origins, active, rpy_axes, adj, reasons = status[1:8]
+            # The numeric values in the file are stored exactly as displayed, i.e.
+            # already in the frame of the active origin, so no conversion here.
             self._apply_values(values)
             self.calc_name = name
             self.setWindowTitle(name)
+            self.origins, self.origin_active = settings_io.normalise_origins(origins, active)
+            self.rpy_axes = settings_io.normalise_rpy_axes(rpy_axes)
+            self.adj_config = settings_io.normalise_adj_config(adj, len(self.origins))
+            self._update_origin_button()
+            self._update_angle_labels()
             print(f"Loaded configuration from {os.path.basename(path)}.")
+            if reasons:
+                # The file differed from the canonical layout (older layout
+                # converted forward, origin_count line, or values not at three
+                # decimals): rewrite it now so it is canonical from here on.
+                why = "; ".join(reasons)
+                try:
+                    settings_io.write_settings(path, values, name, origins=self.origins,
+                                               active=self.origin_active, rpy_axes=self.rpy_axes,
+                                               adj_config=self.adj_config)
+                    print(f"'{os.path.basename(path)}' rewritten in the current format ({why}).")
+                except Exception as exc:
+                    print(f"'{os.path.basename(path)}' could not be rewritten ({why}): {exc}")
+            if len(self.origins) > 1 or self.origin_active != 1:
+                print(f"Origins loaded: {len(self.origins)}; active origin: "
+                      f"{self._origin_name()} ({self._offset_text(self.origins[self.origin_active - 1])}).")
             return
 
         # 3) Genuinely nothing usable to load.  IMPORTANT: do NOT pop a modal
@@ -630,6 +703,10 @@ class HexapodMainWindow(QMainWindow):
         #    forever at "Building interface" while it waits for a click.  Instead
         #    fall back to defaults silently and report it in the console.
         self._apply_values(settings_io.default_values_dict())
+        self.origins, self.origin_active = settings_io.default_origins(), 1
+        self.rpy_axes = config.RPY_AXES_DEFAULT
+        self.adj_config = settings_io.default_adj_config(1)
+        self._update_origin_button()
         if status[0] == "missing":
             self._status_cb("Creating formdata.txt with default values\u2026")
             try:
@@ -657,8 +734,15 @@ class HexapodMainWindow(QMainWindow):
 
     def save_data(self):
         path = data_path(config.SETTINGS_FILE)
-        settings_io.write_settings(path, self._collect_values(), self.calc_name)
-        print("configuration saved...")
+        settings_io.write_settings(path, self._collect_values(), self.calc_name,
+                                   origins=self.origins, active=self.origin_active,
+                                   rpy_axes=self.rpy_axes, adj_config=self.adj_config)
+        self._saved_signature = self._state_signature()
+        if len(self.origins) > 1 or self.origin_active != 1:
+            print(f"configuration saved... ({len(self.origins)} origins, active: "
+                  f"{self._origin_name()})")
+        else:
+            print("configuration saved...")
 
     # ------------------------------------------------------------------
     # Field accessors
@@ -681,9 +765,11 @@ class HexapodMainWindow(QMainWindow):
         return dict(
             xsi=[self.get(f"base{i}x") for i in range(1, 7)],
             ysi=[self.get(f"base{i}y") for i in range(1, 7)],
+            zsi=[self.get(f"base{i}z") for i in range(1, 7)],
             xmi=[self.get(f"plat{i}x") for i in range(1, 7)],
             ymi=[self.get(f"plat{i}y") for i in range(1, 7)],
-            baseZ=self.get("baseZ"), platformZ=self.get("platZheight"),
+            zmi=[self.get(f"plat{i}z") for i in range(1, 7)],
+            rpy_axes=self.rpy_axes,
             zpd=self.get("zpdLegLength"),
             leg_lo=self.get("jointmin"), leg_hi=self.get("jointmax"),
         )
@@ -697,9 +783,8 @@ class HexapodMainWindow(QMainWindow):
         px, py, pz = self.get("Pxval"), self.get("Pyval"), self.get("Pzval")
         lead = self.get("actuatorLead")
 
-        sol = kinematics.stew_inverse(g["xsi"], g["ysi"], g["xmi"], g["ymi"],
-                                      roll, pitch, yaw, px, py, pz,
-                                      g["baseZ"], g["platformZ"])
+        sol = kinematics.stew_inverse(g["xsi"], g["ysi"], g["zsi"], g["xmi"], g["ymi"], g["zmi"],
+                                      roll, pitch, yaw, px, py, pz, axes=self.rpy_axes)
         legs = sol[:6]
         plat = sol[24:42].reshape(6, 3)             # animcoords (== platcoords; T == Ta)
 
@@ -722,7 +807,7 @@ class HexapodMainWindow(QMainWindow):
 
         self._recolor_legs()
 
-        base_pts = np.column_stack([g["xsi"], g["ysi"], np.full(6, g["baseZ"])])
+        base_pts = np.column_stack([g["xsi"], g["ysi"], g["zsi"]])
         do_anim = True if animate is None else animate
         self.platform.update_pose(base_pts, plat, animate=do_anim)
 
@@ -775,32 +860,373 @@ class HexapodMainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def open_adjust(self, column):
         """Port of openAdjustDlg.m / applyAdjust.m. Adds one entered value to all
-        six joints of a column, keeps a cumulative running total per column,
-        recomputes benchZheight, and re-solves."""
+        six joints of a column (xsi/ysi/zsi for the base, xmi/ymi/zmi for the
+        platform), keeps a cumulative running total per column, and re-solves."""
         prev = self._adjust_totals.get(column, 0.0)
         dlg = dialogs.AdjustDialog(column, prev, self)
         if not dlg.exec():
             return
         v = dlg.value
         self._adjust_totals[column] = prev + v
-        which = "base" if column in ("xsi", "ysi") else "plat"
-        axis = "x" if column in ("xsi", "xmi") else "y"
+        which = "base" if column.endswith("si") else "plat"
+        axis = column[0]                          # 'x', 'y' or 'z'
         for i in range(1, 7):
             t = f"{which}{i}{axis}"
             self.set(t, self.get(t) + v)
-        self._recompute_bench_z()
         self.solve_inverse()
+
+    # ------------------------------------------------------------------
+    # Origins / points of interest
+    # ------------------------------------------------------------------
+    def _origin_name(self, index=None):
+        i = (self.origin_active if index is None else index) - 1
+        return self.origins[i]["name"]
+
+    def _active_offset(self):
+        o = self.origins[self.origin_active - 1]
+        return np.array([o["dx"], o["dy"], o["dz"]], float)
+
+    @staticmethod
+    def _offset_text(o):
+        """Describe an origin (dict) relative to Origin 1."""
+        text = f"X {o['dx']:.3f}, Y {o['dy']:.3f}, Z {o['dz']:.3f} mm"
+        if any(abs(o.get(k, 0.0)) > 0 for k in ("roll", "pitch", "yaw")):
+            text += (f", roll {o['roll']:.3f}, pitch {o['pitch']:.3f}, "
+                     f"yaw {o['yaw']:.3f} deg")
+        return text + " from Origin 1"
+
+    def _realign_adj_config(self, old_origins, new_origins):
+        """The Incremental Adj. Table set-up is kept per origin; after the origin
+        list changes, each origin keeps its set-up by name (a renamed or new
+        origin starts with nothing ticked)."""
+        by_name = {o["name"]: r for o, r in zip(old_origins, self.adj_config.get("rows", []))}
+        rows = [dict(by_name.get(o["name"], dict(axes=set(), turns=[settings_io.ADJ_DEFAULT_TURN] * 6)))
+                for o in new_origins]
+        self.adj_config = settings_io.normalise_adj_config(
+            dict(decimals=self.adj_config.get("decimals"), rows=rows), len(new_origins))
+
+    def _update_angle_labels(self):
+        """Constraint labels say which axis each angle rotates about."""
+        if not hasattr(self, "_angle_labels"):
+            return
+        for tag, ch, text in zip(("roll", "pitch", "yaw"), self.rpy_axes, ("Roll", "Pitch", "Yaw")):
+            self._angle_labels[tag].setText(f"{text} [\u00b0 about {ch.lower()}]:")
+
+    def _update_origin_button(self):
+        """Refresh the two-line button text and the Edit-ZPD lock state.
+
+        The zero-displacement coordinates may only be edited in the Origin 1
+        frame (the frame they were entered in); for every other origin the
+        Edit button is disabled.  The +/- column adjusters stay available."""
+        if not hasattr(self, "origin_btn"):
+            return
+        # "Current Origin:" plus the name on one or two further lines (names
+        # are up to 22 characters); the font is then shrunk to fit the width.
+        text = "\n".join(["Current Origin:"] + config.wrap_button_name(self._origin_name()))
+        self.origin_btn.setText(text)
+        self._fit_text(self.origin_btn, text, config.ORIGIN_BTN_RECT_MATLAB[2], max_pt=8.5, min_pt=5.5)
+        self._sync_editzpd_enable()
+
+    def _sync_editzpd_enable(self):
+        if not hasattr(self, "editzpd_btn"):
+            return
+        allow = self.origin_active == 1
+        if not allow and self.editzpd_btn.isChecked():
+            # lock the fields first, exactly as if the user had toggled the
+            # button off themselves
+            self.editzpd_btn.setChecked(False)
+        self.editzpd_btn.setEnabled(allow)
+        # The button explains itself while disabled: a second, centred line.
+        # Set from here alone, so it is right after start-up, a file load, an
+        # origin change or a relabelling (every path ends in _update_origin_button).
+        text = ("Edit Zero-Displacement Coordinates" if allow else
+                "Edit Zero-Displacement Coordinates\n(must be at primary origin to edit)")
+        self.editzpd_btn.setText(text)
+        self._fit_text(self.editzpd_btn, text, 349, max_pt=11)
+        self.editzpd_btn.setToolTip(
+            "" if allow else
+            "Zero-displacement coordinates can only be edited while Origin 1 is "
+            "the current origin (the +/- column adjusters remain available)")
+
+    def open_origin_dialog(self):
+        dlg = dialogs.OriginDialog(self.origins, self.origin_active, self)
+        ip = config.icon_path()
+        if ip:
+            dlg.setWindowIcon(QIcon(ip))
+        dlg.setStyleSheet(config.qt_stylesheet())        # match current theme
+        if not dlg.exec():
+            print("origin selection cancelled - nothing changed.")
+            return
+        self.apply_origin(dlg.origins, dlg.active)
+
+    def apply_origin(self, new_origins, new_active):
+        """Adopt a new origin list / selection and re-express everything.
+
+        An origin is a frame relative to Origin 1: offset d and orientation R
+        (roll, pitch, yaw about the rpy axes).  With A the frame the displayed
+        values are currently in and B the newly selected origin, every joint
+        coordinate becomes q' = M q + e with M = R_B^T R_A and e = R_B^T (d_A -
+        d_B) (kinematics.frame_transition); the old and new poses follow
+        kinematics.change_frame (R' = M R M^T, t' = M t + e - R' e) so the
+        platform does not move physically and every leg length is unchanged.
+        The pose deltas become new - old in the new frame, the sketch keeps
+        the joints where they are on screen (its display frame absorbs M, the
+        user's view angle is kept, the drawing is refitted) and the Edit-ZPD
+        lock is updated.  Search limits are left as entered: they
+        are bounds in the active frame's axes.  This is the ONLY place the
+        active frame changes, so every later solve, +/- adjust, save and
+        workspace analysis automatically uses the new origin.
+        """
+        new_origins, new_active = settings_io.normalise_origins(new_origins, new_active)
+        old_o = self.origins[self.origin_active - 1]
+        new_o = new_origins[new_active - 1]
+        M, e = kinematics.frame_transition(old_o, new_o, self.rpy_axes)
+
+        changed = bool(np.any(np.abs(e) > 0) or not np.allclose(M, np.eye(3), atol=1e-12))
+        if changed:
+            # Apply any pending (typed but unsolved) delta in the frame it was
+            # entered in, so nothing the user typed is silently discarded.
+            self.solve_inverse(animate=False)
+
+            # joints: q' = M q + e (the point of interest becomes the origin
+            # and its axes become the coordinate axes)
+            for i in range(1, 7):
+                for which in ("base", "plat"):
+                    q = M @ np.array([self.get(f"{which}{i}{a}") for a in "xyz"]) + e
+                    for k, a in enumerate("xyz"):
+                        self.set(f"{which}{i}{a}", q[k])
+
+            # poses (old and new): R' = M R M^T, t' = M t + e - R' e
+            for sfx in ("_old", ""):
+                r, p, y, px, py, pz = kinematics.change_frame(
+                    M, e, self.get("roll" + sfx), self.get("pitch" + sfx), self.get("yaw" + sfx),
+                    self.get("Pxval" + sfx), self.get("Pyval" + sfx), self.get("Pzval" + sfx),
+                    axes=self.rpy_axes)
+                self.set("roll" + sfx, r); self.set("pitch" + sfx, p); self.set("yaw" + sfx, y)
+                self.set("Pxval" + sfx, px); self.set("Pyval" + sfx, py); self.set("Pzval" + sfx, pz)
+            # deltas = new - old, read back from the displayed 3-decimal values so
+            # that old + delta reproduces the displayed new pose exactly
+            for tag in POSE_DOFS:
+                self.set(f"{tag}delta", self.get(tag) - self.get(f"{tag}_old"))
+            # the sketch keeps the joints where they are on screen and the
+            # view the user has chosen; only its triad follows the frame, and
+            # the drawing is refitted
+            self.platform.apply_axis_map(M)
+
+        self._realign_adj_config(self.origins, new_origins)
+        self.origins = new_origins
+        self.origin_active = new_active
+        self._update_origin_button()
+        if changed:
+            self.solve_inverse(animate=False)     # legs unchanged; redraw about the new origin
+            self._recolor_legs()
+            print(f"origin changed to '{self._origin_name()}' "
+                  f"({self._offset_text(new_o)}). Joints, poses, illustration and "
+                  f"workspaces are now referenced to this frame.")
+        else:
+            print(f"origins updated; current origin: '{self._origin_name()}' "
+                  f"({self._offset_text(new_o)}).")
+
+    # ------------------------------------------------------------------
+    # Change Coords. (axis relabelling)
+    # ------------------------------------------------------------------
+    def open_coords_dialog(self):
+        fg = self.platform._fg if hasattr(self, "platform") else "black"
+        try:
+            dlg = dialogs.AxisMapDialog(self, fg=fg, rpy_axes=self.rpy_axes)
+        except Exception as exc:
+            print(f"the coordinate-change window could not be opened: {exc!r}")
+            return
+        ip = config.icon_path()
+        if ip:
+            dlg.setWindowIcon(QIcon(ip))
+        dlg.setStyleSheet(config.qt_stylesheet())        # match current theme
+        if not dlg.exec():
+            print("coordinate change closed - nothing changed.")
+            return
+        # first the axis relabelling (in the current angle assignment), then
+        # the new angle assignment, expressed in the relabelled axes
+        self.apply_axis_map(dlg.matrix, dlg.mapping)
+        self.apply_rpy_axes(dlg.rpy_axes)
+
+    # ------------------------------------------------------------------
+    # Incremental adjustment table
+    # ------------------------------------------------------------------
+    def open_adj_table(self):
+        """Application-modal table of per-leg actuator-rotation ratios for a
+        small move along / about each ticked axis of each origin (see
+        adj_table.py).  Computed from the current displayed state; nothing in
+        the program is changed."""
+        from . import adj_table
+
+        def compute(selections):
+            g = self._geom()
+            pose = tuple(self.get(t) for t in ("roll", "pitch", "yaw", "Pxval", "Pyval", "Pzval"))
+            return adj_table.compute_rows(g, pose, self.origins, self.origin_active,
+                                          self.rpy_axes, selections, self.get("actuatorLead"))
+
+        def sketch(origin_index, width_in, height_in):
+            # the main window's sketch for the exports: the joints expressed in
+            # the given origin's frame (q_1 = R_A q_A + d_A, then
+            # q_o = R_o^T (q_1 - d_o)), standard view for that frame
+            from . import platform_view
+            R_A, d_A = kinematics.origin_frame(self.origins[self.origin_active - 1], self.rpy_axes)
+            R_o, d_o = kinematics.origin_frame(self.origins[origin_index], self.rpy_axes)
+            g = self._geom()
+            base = np.column_stack([g["xsi"], g["ysi"], g["zsi"]])
+            plat = np.column_stack([g["xmi"], g["ymi"], g["zmi"]])
+            base1 = (R_A @ base.T).T + d_A
+            plat1 = (R_A @ plat.T).T + d_A
+            base_o = (R_o.T @ (base1 - d_o).T).T
+            plat_o = (R_o.T @ (plat1 - d_o).T).T
+            # every preview shares the primary origin's standard orientation
+            frame = platform_view.sketch_frame_for_origin(base1, plat1, R_o)
+            return platform_view.render_sketch_rgba(base_o, plat_o, width_in, height_in, 200, frame=frame)
+
+        context = dict(calc_name=self.calc_name, frame_name=self._origin_name(),
+                       rpy_axes=self.rpy_axes, sketch=sketch)
+        cfg = settings_io.normalise_adj_config(self.adj_config, len(self.origins))
+        try:
+            dlg = dialogs.IncrementalAdjDialog(self, self.origins, self.origin_active, compute,
+                                               context, cfg)
+        except Exception as exc:
+            print(f"the incremental adjustment table could not be opened: {exc!r}")
+            return
+        ip = config.icon_path()
+        if ip:
+            dlg.setWindowIcon(QIcon(ip))
+        dlg.setStyleSheet(config.qt_stylesheet())
+        if dlg.exec():
+            # Confirm: keep the set-up (ticks, turns, decimals); saved with
+            # Save Everything.  Close discards the changes.
+            self.adj_config = settings_io.normalise_adj_config(dlg.config(), len(self.origins))
+            print("incremental adjustment table set-up confirmed.")
+
+    def apply_rpy_axes(self, new_axes):
+        """Change which coordinate axis roll, pitch and yaw rotate about
+        (cyclic assignments only, kinematics.RPY_AXES_OPTIONS).
+
+        The physical rotations do not change: the old and new poses and every
+        origin's orientation are re-extracted for the new assignment
+        (kinematics.convert_rpy_axes), the deltas become new - old, and each
+        angle's search limits follow the axis they belong to
+        (kinematics.remap_rpy_limits).  The constraint labels show the new
+        axes; the file records the assignment on its rpy_axes line."""
+        new_axes = settings_io.normalise_rpy_axes(new_axes)
+        old_axes = self.rpy_axes
+        if new_axes == old_axes:
+            return
+        self.solve_inverse(animate=False)         # apply any pending delta first
+        for sfx in ("_old", ""):
+            r, p, y = kinematics.convert_rpy_axes(
+                self.get("roll" + sfx), self.get("pitch" + sfx), self.get("yaw" + sfx),
+                old_axes, new_axes)
+            self.set("roll" + sfx, r); self.set("pitch" + sfx, p); self.set("yaw" + sfx, y)
+        for tag in POSE_DOFS:
+            self.set(f"{tag}delta", self.get(tag) - self.get(f"{tag}_old"))
+        mn, mx = kinematics.remap_rpy_limits(
+            [self.get(k + "min") for k in ("roll", "pitch", "yaw")],
+            [self.get(k + "max") for k in ("roll", "pitch", "yaw")], old_axes, new_axes)
+        for j, k in enumerate(("roll", "pitch", "yaw")):
+            self.set(k + "min", mn[j]); self.set(k + "max", mx[j])
+        for o in self.origins[1:]:
+            r, p, y = kinematics.convert_rpy_axes(o["roll"], o["pitch"], o["yaw"], old_axes, new_axes)
+            o["roll"], o["pitch"], o["yaw"] = round(r, 3), round(p, 3), round(y, 3)
+        self.rpy_axes = new_axes
+        self._update_angle_labels()
+        self.solve_inverse(animate=False)
+        self._recolor_legs()
+        print(f"rotation angles reassigned: roll about {new_axes[0]}, pitch about "
+              f"{new_axes[1]}, yaw about {new_axes[2]} (was {old_axes[0]}, {old_axes[1]}, "
+              f"{old_axes[2]}). Poses, limits and origins re-expressed; nothing moved.")
+
+    def apply_axis_map(self, M, mapping=None):
+        """Relabel the axes with the signed permutation M (new = M @ current).
+
+        Applied to everything expressed in coordinates: every base and platform
+        joint (X, Y, Z), the old and new poses (translation p' = M p, rotation
+        R' = M R M^T re-expressed as roll / pitch / yaw), the pose deltas (new -
+        old), the search limits (each axis interval follows its axis, mirrored
+        on a sign flip), the origin offsets (d' = M d) and the running +/-
+        column totals.  Leg lengths are invariant.  The sketch keeps the joints
+        where they are on screen and only its coordinate triad changes (see
+        PlatformView.apply_axis_map).  The field labels stay X, Y, Z.
+        """
+        M = np.asarray(M, float)
+        if np.allclose(M, np.eye(3)):
+            print("coordinate mapping is the identity - nothing changed.")
+            return
+        # apply any typed-but-unsolved delta in the axes it was entered in
+        self.solve_inverse(animate=False)
+
+        for i in range(1, 7):
+            for which in ("base", "plat"):
+                v = M @ np.array([self.get(f"{which}{i}{a}") for a in "xyz"])
+                for k, a in enumerate("xyz"):
+                    self.set(f"{which}{i}{a}", v[k])
+
+        for sfx in ("_old", ""):
+            r, p, y, px, py, pz = kinematics.remap_pose(
+                M, self.get("roll" + sfx), self.get("pitch" + sfx), self.get("yaw" + sfx),
+                self.get("Pxval" + sfx), self.get("Pyval" + sfx), self.get("Pzval" + sfx),
+                axes=self.rpy_axes)
+            self.set("roll" + sfx, r); self.set("pitch" + sfx, p); self.set("yaw" + sfx, y)
+            self.set("Pxval" + sfx, px); self.set("Pyval" + sfx, py); self.set("Pzval" + sfx, pz)
+        for tag in POSE_DOFS:
+            self.set(f"{tag}delta", self.get(tag) - self.get(f"{tag}_old"))
+
+        # translation limits follow their axis
+        mn, mx = kinematics.remap_limits(
+            M, [self.get(k + "min") for k in ("px", "py", "pz")],
+            [self.get(k + "max") for k in ("px", "py", "pz")])
+        for j, k in enumerate(("px", "py", "pz")):
+            self.set(k + "min", mn[j]); self.set(k + "max", mx[j])
+        # angle limits: each angle is about a coordinate axis (rpy_axes), and
+        # the interval follows that axis through the relabelling
+        angle_of_axis = {ch: tag for ch, tag in zip(self.rpy_axes, ("roll", "pitch", "yaw"))}
+        per_axis_min = [self.get(angle_of_axis[ch] + "min") for ch in "XYZ"]
+        per_axis_max = [self.get(angle_of_axis[ch] + "max") for ch in "XYZ"]
+        mn, mx = kinematics.remap_limits(M, per_axis_min, per_axis_max)
+        for j, ch in enumerate("XYZ"):
+            self.set(angle_of_axis[ch] + "min", mn[j]); self.set(angle_of_axis[ch] + "max", mx[j])
+
+        # origins: offsets d' = M d, orientations R' = M R M^T
+        for o in self.origins:
+            d = M @ np.array([o["dx"], o["dy"], o["dz"]])
+            o["dx"], o["dy"], o["dz"] = (round(float(d[0]), 3), round(float(d[1]), 3),
+                                         round(float(d[2]), 3))
+            r, p, y = kinematics.rpy_from_rotation(
+                M @ kinematics._rotation(o["roll"], o["pitch"], o["yaw"], self.rpy_axes) @ M.T,
+                self.rpy_axes)
+            o["roll"], o["pitch"], o["yaw"] = round(r, 3), round(p, 3), round(y, 3)
+        self.origins, self.origin_active = settings_io.normalise_origins(self.origins, self.origin_active)
+
+        # running +/- totals per column follow their axis (with sign)
+        for grp in ("si", "mi"):
+            old = np.array([self._adjust_totals.get(a + grp, 0.0) for a in "xyz"])
+            new = M @ old
+            for k, a in enumerate("xyz"):
+                self._adjust_totals[a + grp] = float(new[k])
+
+        self._update_origin_button()
+        # The sketch keeps the joints exactly where they are on screen; only
+        # its coordinate triad changes to show where the new axes point.
+        self.platform.apply_axis_map(M)
+        self.solve_inverse(animate=False)      # legs unchanged; redraw
+        self._recolor_legs()
+        if mapping:
+            print(f"coordinate axes relabelled: current X -> {mapping[0]}, "
+                  f"Y -> {mapping[1]}, Z -> {mapping[2]}. Joints, poses, limits and "
+                  f"origins are now expressed in the new axes; the sketch keeps its view "
+                  f"and its triad shows the new axes.")
 
     # ------------------------------------------------------------------
     # Edit-lock toggles
     # ------------------------------------------------------------------
     def _geom_tags(self):
-        # benchZheight is a computed field and stays read-only at all times,
-        # so it is intentionally excluded from the editable set.
-        tags = ["baseZ", "platZheight", "zpdLegLength", "benchThickness",
-                "platToBenchBottomZ"]
+        tags = ["zpdLegLength"]
         for i in range(1, 7):
-            tags += [f"base{i}x", f"base{i}y", f"plat{i}x", f"plat{i}y"]
+            tags += [f"base{i}{a}" for a in "xyz"] + [f"plat{i}{a}" for a in "xyz"]
         return tags
 
     def _constraint_tags(self):
@@ -813,27 +1239,19 @@ class HexapodMainWindow(QMainWindow):
     def _apply_edit_locks(self, zpd_unlocked, constraints_unlocked):
         for tag in self._geom_tags():
             self._set_field_enable(tag, "on" if zpd_unlocked else "off")
-        # benchZheight is always disabled/greyed (computed field).
-        self._set_field_enable("benchZheight", "off")
         # The +/- column adjusters work even while coordinates are locked
         # (exactly as in the MATLAB tool), so they are always enabled.
         for tag in self._constraint_tags():
             self._set_field_enable(tag, "on" if constraints_unlocked else "off")
 
     def on_edit_zpd(self, checked):
-        # checked == True -> unlock for editing; False -> lock (and recompute
-        # benchZheight), matching edit_zpd.m. No re-solve here.
+        # checked == True -> unlock for editing; False -> lock, matching
+        # edit_zpd.m. No re-solve here.
         self._apply_edit_locks(checked, self.editcon_btn.isChecked())
-        if not checked:
-            self._recompute_bench_z()
 
     def on_edit_constraints(self, checked):
         # Enable/disable the constraint fields, matching edit_Constraints.m.
         self._apply_edit_locks(self.editzpd_btn.isChecked(), checked)
-
-    def _recompute_bench_z(self):
-        bz = self.get("platZheight") + self.get("benchThickness") + self.get("platToBenchBottomZ")
-        self.set("benchZheight", bz)
 
     # ------------------------------------------------------------------
     # Workspace (reachable / orientation)
@@ -926,6 +1344,16 @@ class HexapodMainWindow(QMainWindow):
         worker._dlg = dlg
         worker._thread = thread
         worker._res_label = res_label
+        worker._origin_name = self._origin_name()
+        worker._origin_offset = self._active_offset().copy()
+        worker._rpy_axes = self.rpy_axes
+        # The 3D windows keep the sketch's "up": the reachable workspace is
+        # viewed through the sketch's display frame D; the orientation
+        # workspace's axes are the roll / pitch / yaw rotation axes, i.e. D P
+        # with P the rpy-axes permutation (a rotation vector transforms like a
+        # vector).
+        D = self.platform.workspace_frame()
+        worker._view_frame = D if kind == "reachable" else D @ kinematics.rpy_perm(self.rpy_axes)
 
         thread.started.connect(worker.run)
         # progress/done/failed are emitted from the worker thread; connecting them
@@ -956,6 +1384,14 @@ class HexapodMainWindow(QMainWindow):
             print("...workspace search aborted (no window opened).")
             dlg.append_status("aborted - no window opened.")
         else:
+            # record which origin the sweep was referenced to (shown in the 3D
+            # window title / limits box and kept in the saved dataset)
+            data["origin_name"] = str(getattr(worker, "_origin_name", "") or "")
+            data["origin_offset"] = np.asarray(
+                getattr(worker, "_origin_offset", np.zeros(3)), float).reshape(3)
+            data["rpy_axes"] = str(getattr(worker, "_rpy_axes", config.RPY_AXES_DEFAULT))
+            data["view_frame"] = np.asarray(getattr(worker, "_view_frame", np.eye(3)),
+                                            float).reshape(3, 3)
             if kind == "reachable":
                 self._last_reach = data
                 W.save_dataset(data_path("reachable_workspace_data_NEW.mat"), data)
@@ -1040,9 +1476,10 @@ class HexapodMainWindow(QMainWindow):
                 data = cached
             break
 
-        out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder", data_path(""))
+        out_dir = QFileDialog.getExistingDirectory(self, "Choose output folder", savedir.start_dir())
         if not out_dir:
             return
+        savedir.remember(out_dir)
         print(f"exporting {dlg.count} PNG image(s) for {kind} workspace...")
         print("(rendering in the background - the window stays responsive)")
         self._start_export(data, out_dir, dlg.count, kind)
@@ -1081,18 +1518,55 @@ class HexapodMainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Quit
     # ------------------------------------------------------------------
-    def on_quit(self):
+    def _state_signature(self):
+        """Everything Save Everything writes, as one comparable value (the
+        3-decimal strings that are actually saved, the origins and the active
+        origin).  Equal signatures mean the file on disk already holds the
+        current state."""
+        vals = tuple(settings_io.fmt(v) for v in self._collect_values().values())
+        origins = tuple((o["name"],) + tuple(settings_io.fmt(o[k]) for k in settings_io.ORIGIN_KEYS)
+                        for o in self.origins)
+        adj = (self.adj_config["decimals"],
+               tuple((settings_io.adj_mask(r["axes"]), tuple(f"{t:.1f}" for t in r["turns"]))
+                     for r in self.adj_config["rows"]))
+        return (vals, origins, self.origin_active, self.calc_name, self.rpy_axes, adj)
+
+    def is_dirty(self):
+        return self._saved_signature != self._state_signature()
+
+    def _decide_quit(self):
+        """Shared by the Quit button, the Escape key and the title-bar X.
+
+        Returns True when the program should close.  If nothing has changed
+        since start-up or since the last Save Everything, it closes at once;
+        otherwise the user is asked to quit with saving, without saving, or to
+        cancel."""
+        if not self.is_dirty():
+            print("quitting (nothing changed since the last save)...")
+            return True
         choice = dialogs.quit_dialog(self)
         if choice == "cancel":
-            return
+            return False
         if choice == "save":
             self.save_data()                 # prints "configuration saved..."
             print("quitting...")
         else:
             print("quitting without saving...")
-        self.close()
+        return True
+
+    def on_quit(self):
+        if self._decide_quit():
+            self._quit_confirmed = True
+            self.close()
 
     def closeEvent(self, event):
+        # Title-bar X (or any other close request) goes through the same
+        # decision as the Quit button / Escape.
+        if not self._quit_confirmed:
+            if not self._decide_quit():
+                event.ignore()
+                return
+            self._quit_confirmed = True
         try:
             self._restore_streams()
         except Exception:

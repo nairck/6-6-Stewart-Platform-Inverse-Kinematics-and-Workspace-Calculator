@@ -15,7 +15,7 @@ import os
 import time
 import numpy as np
 
-from .kinematics import _rotation, legs_for_directions
+from .kinematics import _rotation, legs_for_directions, rpy_perm
 from . import config
 
 
@@ -170,7 +170,8 @@ def _split_upper_lower(coord_along_axis, center_value):
 def reachable_sweep(geom, limits, center, scaler, progress=None, cancelled=None):
     """Compute the reachable (XYZ translation) workspace boundary.
 
-    geom   : dict with xsi,ysi,xmi,ymi,baseZ,platformZ,zpd,leg_lo,leg_hi
+    geom   : dict with xsi,ysi,zsi,xmi,ymi,zmi (per-joint coordinates),zpd,leg_lo,leg_hi,
+             rpy_axes (which axis roll / pitch / yaw rotate about, default 'XYZ')
     limits : dict with pxmin,pxmax,pymin,pymax,pzmin,pzmax
     center : (roll0,pitch0,yaw0,x0,y0,z0) centre pose
     Returns a dict of arrays ready to save / render, or None if cancelled.
@@ -179,9 +180,9 @@ def reachable_sweep(geom, limits, center, scaler, progress=None, cancelled=None)
     if progress:
         progress("Working on reachable workspace...")
     roll0, pitch0, yaw0, x0, y0, z0 = center
-    a = np.column_stack([geom["xsi"], geom["ysi"], np.full(6, geom["baseZ"])])
-    b = np.column_stack([geom["xmi"], geom["ymi"], np.full(6, geom["platformZ"])])
-    R = _rotation(roll0, pitch0, yaw0)
+    a = np.column_stack([geom["xsi"], geom["ysi"], geom["zsi"]])
+    b = np.column_stack([geom["xmi"], geom["ymi"], geom["zmi"]])
+    R = _rotation(roll0, pitch0, yaw0, geom.get("rpy_axes", "XYZ"))
     c = np.array([x0, y0, z0], float)
 
     dx = max(abs(limits["pxmin"] - x0), abs(limits["pxmax"] - x0))
@@ -229,13 +230,16 @@ def reachable_sweep(geom, limits, center, scaler, progress=None, cancelled=None)
 
 
 def _orientation_radii(a, b, base_t, n, r_init, leg_lo, leg_hi, zpd,
-                       roll0, pitch0, yaw0, tol_r=0.0005, cancelled=None):
+                       roll0, pitch0, yaw0, tol_r=0.0005, cancelled=None, axes="XYZ"):
     """Bracket-and-bisect the boundary radius for a chunk of angular directions.
 
     Each direction perturbs (roll0,pitch0,yaw0); position is fixed at base_t.
+    `axes` is the rpy-axes assignment: R = P R0 P^T (see kinematics._rotation).
     Returns r_lo (len(n),) or None if cancelled.
     """
     ang0 = np.array([roll0, pitch0, yaw0])
+    P = rpy_perm(axes)
+    identity_axes = str(axes).upper() == "XYZ"
 
     def legs_for_angles(radii):
         m = len(radii)
@@ -246,6 +250,8 @@ def _orientation_radii(a, b, base_t, n, r_init, leg_lo, leg_hi, zpd,
         R[:, 0, 0] = cy * cz;                 R[:, 0, 1] = -cy * sz;                R[:, 0, 2] = sy
         R[:, 1, 0] = sx * sy * cz + cx * sz;  R[:, 1, 1] = -sx * sy * sz + cx * cz; R[:, 1, 2] = -sx * cy
         R[:, 2, 0] = -cx * sy * cz + sx * sz; R[:, 2, 1] = cx * sy * sz + sx * cz;  R[:, 2, 2] = cx * cy
+        if not identity_axes:
+            R = np.einsum("ij,njk,lk->nil", P, R, P)          # P R0 P^T
         b_trans = np.einsum("nij,kj->nki", R, b) + base_t[None, None, :]
         return np.sqrt(np.sum((a[None, :, :] - b_trans) ** 2, axis=2))
 
@@ -280,8 +286,8 @@ def orientation_sweep(geom, limits, center, scaler, progress=None, cancelled=Non
     if progress:
         progress("working on orientation workspace...")
     roll0, pitch0, yaw0, x0, y0, z0 = center
-    a = np.column_stack([geom["xsi"], geom["ysi"], np.full(6, geom["baseZ"])])
-    b = np.column_stack([geom["xmi"], geom["ymi"], np.full(6, geom["platformZ"])])
+    a = np.column_stack([geom["xsi"], geom["ysi"], geom["zsi"]])
+    b = np.column_stack([geom["xmi"], geom["ymi"], geom["zmi"]])
 
     # In orientation space the "direction" perturbs (roll,pitch,yaw); position is fixed.
     n = _direction_grid(scaler)
@@ -303,7 +309,8 @@ def orientation_sweep(geom, limits, center, scaler, progress=None, cancelled=Non
             return None
         e = min(s + CHUNK, N)
         rc = _orientation_radii(a, b, base_t, n[s:e], r_init, leg_lo, leg_hi, zpd,
-                                roll0, pitch0, yaw0, cancelled=cancelled)
+                                roll0, pitch0, yaw0, cancelled=cancelled,
+                                axes=geom.get("rpy_axes", "XYZ"))
         if rc is None:
             return None
         r_lo[s:e] = rc
@@ -345,6 +352,42 @@ def dataset_points(data):
     return pts, lims
 
 
+def dataset_view_frame(data):
+    """The 3 x 3 display frame stored with a dataset (see the main window's
+    sweep set-up): the 3D windows are viewed through it so their "up" matches
+    the sketch.  Identity for datasets without one (older files, external
+    .mat files) or with an invalid one."""
+    v = data.get("view_frame") if hasattr(data, "get") else None
+    if v is None:
+        return np.eye(3)
+    try:
+        D = np.asarray(v, float).reshape(3, 3)
+    except Exception:
+        return np.eye(3)
+    if not np.all(np.isfinite(D)) or abs(np.linalg.det(D) - 1.0) > 1e-6:
+        return np.eye(3)
+    return D
+
+
+def dataset_origin_name(data):
+    """Return the origin / point-of-interest name stored with a dataset, or
+    None for datasets that predate the origin feature (or external .mat files).
+    Robust to the string having gone through .npz or .mat round-trips."""
+    v = data.get("origin_name") if hasattr(data, "get") else None
+    if v is None:
+        return None
+    try:
+        arr = np.asarray(v)
+        if arr.dtype.kind in ("U", "S"):
+            s = str(arr.ravel()[0]) if arr.size else ""
+        else:
+            s = str(v)
+    except Exception:
+        s = str(v)
+    s = s.strip()
+    return s or None
+
+
 def _report_limits(progress, data, kind):
     _, (xl, yl, zl) = dataset_points(data)
     if kind == "reachable":
@@ -383,6 +426,10 @@ def save_dataset(path, data):
         for k, v in arrays.items():
             if k == "scaler":
                 out[k] = float(np.ravel(v)[0]) if np.ndim(v) else float(v)
+            elif v.dtype.kind in ("U", "S"):
+                out[k] = str(np.ravel(v)[0]) if v.size else ""   # e.g. origin_name, rpy_axes
+            elif k == "view_frame":
+                out[k] = np.asarray(v, float).reshape(3, 3)      # keep the matrix shape
             else:
                 out[k] = np.ravel(v).reshape(1, -1)
         savemat(path, out)
@@ -419,6 +466,8 @@ def _mat_to_dataset(m):
     else:
         kind = "orientation"
     out = {k: np.ravel(np.asarray(v)) for k, v in m.items()}
+    if "view_frame" in m:
+        out["view_frame"] = np.asarray(m["view_frame"], float).reshape(3, 3)
     out["kind"] = kind
     if "scaler" in m:
         out["scaler"] = float(np.ravel(m["scaler"])[0])
