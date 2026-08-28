@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QRadioButton, QButtonGroup, QTextEdit, QMessageBox, QWidget,
     QTableWidget, QTableWidgetItem, QComboBox, QCheckBox, QFileDialog, QFrame, QHeaderView,
-    QStyledItemDelegate, QLayout, QSpacerItem, QSizePolicy,
+    QStyledItemDelegate, QLayout, QSpacerItem, QSizePolicy, QRadioButton, QButtonGroup,
 )
 
 from . import config
@@ -917,15 +917,19 @@ class IncrementalAdjDialog(QDialog):
     characters), the axis with a + sign, the six leg entries (= unit ratio x
     turn; every entry that reads +1 or -1 at the chosen decimals is bold) and
     the row's Turn [deg] box (positive or negative, one decimal, |turn| at
-    most 99999.9, live).  "Round up above 0.99" (on by default, not saved)
-    takes any unit ratio whose rounded magnitude exceeds 0.99 to exactly 1.
-    Bold marks the legs whose unit ratio reads +/-1, decided at turn = 1.0 and
-    kept as the turns change (see adj_table.apply_turns).  To the right of the table, in line with each row, a
-    square x button resets that row's turn to 1.0.  The table (with its reset
+    most 99999.9, live).  "Round up above:" (0.99 by default, not saved) takes
+    any unit ratio whose rounded magnitude exceeds the chosen threshold, but is
+    below 1, to exactly 1; its last entry turns that off.  From Home / From
+    New chooses the pose the whole table is computed at: the zero-displacement
+    configuration, or the new absolute pose shown in the main window.  Bold marks the legs whose unit
+    ratio reads +/-1, decided at turn = 1.0 and kept as the turns change (see
+    adj_table.apply_turns).  To the right of the table, in line with each row,
+    a square x button resets that row's turn to 1.0.  The table (with its reset
     column) is centred in the window with a margin of about four characters on
     each side; the window is as wide as the wider of that and the tick grid.
 
-    Export writes text, Excel (live formulas, built-in writer) or PNG.  Confirm keeps the
+    Export writes text, Excel (live formulas, built-in writer) or PNG, always
+    of the unit table (every turn 1.0), leaving the window's own turns alone.  Confirm keeps the
     set-up (ticks, turns, decimals) in the program (saved by Save
     Everything); Close discards the changes, like the other windows.
     `compute(selections) -> rows` and `context` come from the main window.
@@ -934,22 +938,32 @@ class IncrementalAdjDialog(QDialog):
     CELL_PAD = 14                          # pixels added to the text width of a column
     GAP_CHARS = 4                          # margin left and right of the table, in characters
 
-    def __init__(self, parent, origins, active, compute, context, cfg):
+    def __init__(self, parent, origins, active, compute, context, cfg, view=None):
         super().__init__(parent)
         self.setWindowTitle("Incremental Adjustment Table")
         self.setWindowModality(Qt.ApplicationModal)
         self.setModal(True)
         self._compute = compute
         self._ctx = context
+        # The view settings (decimals, round-up threshold, pose choice) live for
+        # as long as the program runs, so reopening the window finds them as
+        # they were left, whether it was closed with Confirm or with Close.
+        # They are not part of the saved set-up.
+        view = dict(view or {})
         self._origins = origins
         self._rows = []
         self._turns = {}                      # row_key -> turn multiplier [deg]
+        self._labels = {}                     # row_key -> the user's label for the row
         self._turn_edits = {}                 # row_key -> NumberLineEdit
+        self._label_edits = {}                # row_key -> NameLineEdit
         self._reset_btns = []
         for i, r in enumerate(cfg["rows"]):
             for a, t in zip(adj_table.AXES, r["turns"]):
                 if abs(t - adj_table.DEFAULT_TURN) > 0:
                     self._turns[(i, "+" + a)] = t
+            for a, text in zip(adj_table.AXES, r.get("labels", [])):
+                if text:
+                    self._labels[(i, "+" + a)] = text
         never_confirmed = settings_io.adj_config_is_default(cfg)
 
         lay = QVBoxLayout(self)
@@ -1024,25 +1038,48 @@ class IncrementalAdjDialog(QDialog):
         self.decimals = QComboBox()
         for d in adj_table.DECIMALS_CHOICES:
             self.decimals.addItem(str(d))
-        self.decimals.setCurrentText(str(cfg["decimals"]))
+        self.decimals.setCurrentText(str(view.get("decimals", cfg["decimals"])))
         self.decimals.setFixedWidth(64)
         self.decimals.currentIndexChanged.connect(self.refresh)
         dec_row.addWidget(dec_lbl)
         dec_row.addWidget(self.decimals)
         dec_row.addStretch(1)
-        self.round_up = QCheckBox("Round up above 0.99")
-        self.round_up.setLayoutDirection(Qt.RightToLeft)   # the tick sits after the label
-        self.round_up.setChecked(adj_table.DEFAULT_ROUND_UP)
-        self.round_up.setToolTip("Show a unit ratio whose rounded magnitude is above 0.99 as "
-                                 "exactly 1 (and mark that leg bold)")
-        self.round_up.toggled.connect(self.refresh)
+        # which pose the table is computed from, evenly spaced across the row
+        self.from_home = QRadioButton("From Home")
+        self.from_new = QRadioButton("From New")
+        self._pose_group = QButtonGroup(self)          # one or the other, never both
+        for i, rb in enumerate((self.from_home, self.from_new)):
+            rb.setLayoutDirection(Qt.RightToLeft)      # the button sits after its label
+            self._pose_group.addButton(rb, i)
+        self.from_home.setChecked(bool(view.get("from_home", True)))
+        self.from_new.setChecked(not self.from_home.isChecked())
+        self.from_home.setToolTip("Compute the table at the zero-displacement (home) configuration")
+        self.from_new.setToolTip("Compute the table at the new absolute pose shown in the main window")
+        self._pose_group.buttonToggled.connect(lambda *_: self.refresh())
+        dec_row.addWidget(self.from_home)
+        dec_row.addStretch(1)
+        dec_row.addWidget(self.from_new)
+        dec_row.addStretch(1)
+        round_lbl = QLabel("Round up above:")
+        self.round_up = QComboBox()
+        for t in adj_table.ROUND_UP_CHOICES:
+            self.round_up.addItem(adj_table.round_up_text(t))
+        self.round_up.setCurrentText(
+            adj_table.round_up_text(view.get("round_up", adj_table.DEFAULT_ROUND_UP)))
+        self.round_up.setFixedWidth(72)
+        tip = ("Show a unit ratio whose rounded magnitude is above this, but below 1, "
+               "as exactly 1 (and mark that leg bold); '- off -' leaves the rounded values alone")
+        round_lbl.setToolTip(tip)
+        self.round_up.setToolTip(tip)
+        self.round_up.currentIndexChanged.connect(self.refresh)
+        dec_row.addWidget(round_lbl)
         dec_row.addWidget(self.round_up)
         dec_row.addItem(self._dec_right_spacer)
         self._dec_row = dec_row
         lay.addLayout(dec_row)
 
         # ---- table + reset column ----
-        self.COLS = ["Origin", "Axis"] + list(adj_table.LEGS) + ["Turn [\u00b0]"]
+        self.COLS = ["Origin", "Axis", "Label"] + list(adj_table.LEGS) + ["Turn [\u00b0]"]
         self.table = QTableWidget(0, len(self.COLS))
         t = self.table
         t.setHorizontalHeaderLabels(self.COLS)
@@ -1069,12 +1106,36 @@ class IncrementalAdjDialog(QDialog):
         hh.setHighlightSections(False)
         self.reset_col = QWidget()
         self.reset_col.setFixedWidth(self.ROW_H)
+        # a thin row above the table marking the two columns the user fills in
+        self._user_row = QWidget()
+        self._user_row.setFixedHeight(15)
+        self._user_marks = []
+        for _ in range(2):
+            m = QLabel("user input", self._user_row)
+            mf = m.font(); mf.setPointSize(8); mf.setItalic(True); m.setFont(mf)
+            m.setStyleSheet("color:#888888;")
+            m.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
+            self._user_marks.append(m)
+        table_col = QVBoxLayout()              # the marks sit directly over the table
+        table_col.setContentsMargins(0, 0, 0, 0)
+        table_col.setSpacing(2)
+        table_col.addWidget(self._user_row, 0, Qt.AlignLeft)
+        table_col.addWidget(t, 0, Qt.AlignLeft)
+        reset_col_wrap = QVBoxLayout()
+        reset_col_wrap.setContentsMargins(0, 0, 0, 0)
+        reset_col_wrap.setSpacing(2)
+        self._reset_spacer = QSpacerItem(1, self._user_row.height(), QSizePolicy.Minimum,
+                                         QSizePolicy.Fixed)
+        reset_col_wrap.addItem(self._reset_spacer)
+        reset_col_wrap.addWidget(self.reset_col, 0, Qt.AlignTop)
         table_row = QHBoxLayout()
         table_row.setSpacing(6)
         table_row.addStretch(1)                # centred whatever the window width
-        table_row.addWidget(t, 0, Qt.AlignTop)
-        table_row.addWidget(self.reset_col, 0, Qt.AlignTop)
+        table_row.addLayout(table_col)
+        table_row.addLayout(reset_col_wrap)
         table_row.addStretch(1)
+        # the marks and the table are one block, so the marks sit just above
+        # the columns they belong to
         lay.addLayout(table_row)
 
         # export buttons left-aligned with the table's left edge (the spacer is
@@ -1090,7 +1151,7 @@ class IncrementalAdjDialog(QDialog):
         for b in (self.export_png_btn, self.export_txt_btn, self.export_xlsx_btn, self.ok, self.close_btn):
             b.setFixedHeight(28)
             b.setAutoDefault(False)
-        self.ok.setDefault(True)
+        self.ok.setDefault(False)      # Enter updates the table, it does not confirm
         for b in (self.export_png_btn, self.export_txt_btn, self.export_xlsx_btn):
             btn_row.addWidget(b)
         btn_row.addStretch(1)
@@ -1115,13 +1176,24 @@ class IncrementalAdjDialog(QDialog):
                 sel[i] = chosen
         return sel
 
+    def labels(self):
+        """The user's row labels, keyed by row_key (kept for the session)."""
+        return dict(self._labels)
+
+    def view_state(self):
+        """Decimals, round-up threshold and pose choice, to be handed back the
+        next time the window is opened.  Not saved to the settings file."""
+        return dict(decimals=self._decimals(), round_up=self._round_up(),
+                    from_home=self._from_home())
+
     def config(self):
         """The set-up to keep: ticks and turns per origin, decimals."""
         rows = []
         for i, row in enumerate(self._checks):
             rows.append(dict(
                 axes={ax for ax, cb in zip(adj_table.AXES, row) if cb.isChecked()},
-                turns=[self._turns.get((i, "+" + ax), adj_table.DEFAULT_TURN) for ax in adj_table.AXES]))
+                turns=[self._turns.get((i, "+" + ax), adj_table.DEFAULT_TURN) for ax in adj_table.AXES],
+                labels=[self._labels.get((i, "+" + ax), "") for ax in adj_table.AXES]))
         return dict(decimals=self._decimals(), rows=rows)
 
     def _decimals(self):
@@ -1149,18 +1221,30 @@ class IncrementalAdjDialog(QDialog):
             e.setText(adj_table.format_value(adj_table.DEFAULT_TURN, adj_table.TURN_DECIMALS))
         self._update_row_values()
 
+    def keyPressEvent(self, event):
+        """Enter (or Return) refreshes the table, as one expects after typing in
+        a cell; it never presses Confirm."""
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.refresh()
+            return
+        super().keyPressEvent(event)
+
     def _round_up(self):
-        return bool(self.round_up.isChecked())
+        """The selected round-up threshold (0 when the menu says Disable)."""
+        return adj_table.round_up_value(self.round_up.currentText())
+
+    def _from_home(self):
+        return bool(self.from_home.isChecked())
 
     def _update_row_values(self):
         """Rewrite the six leg cells of every row from unit ratio x turn (the
         bold legs are fixed by apply_turns and do not change with the turns)."""
         dec = self._decimals()
-        adj_table.apply_turns(self._rows, self._turns, dec, self._round_up())
+        adj_table.apply_turns(self._rows, self._turns, dec, self._round_up(), self._labels)
         heavy = self._heavy_font()
         for k, r in enumerate(self._rows):
             for j, v in enumerate(r["values"]):
-                it = self.table.item(k, 2 + j)
+                it = self.table.item(k, 3 + j)
                 if it is None:
                     continue
                 it.setText(adj_table.format_value(v, dec))
@@ -1187,14 +1271,16 @@ class IncrementalAdjDialog(QDialog):
         sizes = adj_table.group_sizes(self._rows)
         widths = []
         for c, name in enumerate(self.COLS):
-            w = fmb.horizontalAdvance(name)
+            w = max(fmb.horizontalAdvance(line) for line in name.split("\n"))
             if c == 0:
                 for r in self._rows:
                     for line in adj_table.display_name(r, sizes).split("\n"):
                         w = max(w, fm.horizontalAdvance(line))
             elif c == 1:
                 w = max([w] + [fm.horizontalAdvance(r["axis"]) for r in self._rows])
-            elif c <= 7:
+            elif c == 2:
+                w = max([w] + [fmb.horizontalAdvance(r.get("label") or "") for r in self._rows])
+            elif c <= 8:
                 w = max(w, fmb.horizontalAdvance(widest_leg))
             else:
                 w = max(w, fm.horizontalAdvance(widest_turn))
@@ -1203,13 +1289,14 @@ class IncrementalAdjDialog(QDialog):
 
     def refresh(self, *_):
         dec = self._decimals()
-        self._rows = adj_table.apply_turns(self._compute(self.selections()), self._turns,
-                                           dec, self._round_up())
+        self._rows = adj_table.apply_turns(self._compute(self.selections(), self._from_home()),
+                                           self._turns, dec, self._round_up(), self._labels)
         t = self.table
         t.clearSpans()
         t.setRowCount(0)                       # drops the old cell widgets
         t.setRowCount(len(self._rows))
         self._turn_edits = {}
+        self._label_edits = {}
         heavy = self._heavy_font()
         sizes = adj_table.group_sizes(self._rows)
         groups = []
@@ -1233,12 +1320,29 @@ class IncrementalAdjDialog(QDialog):
             ax = QTableWidgetItem(r["axis"])
             ax.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             t.setItem(k, 1, ax)
+            # the row's own label: free text, centred, up to adj_table.LABEL_MAX
+            lab = NameLineEdit(r["label"], max_len=adj_table.LABEL_MAX, forbidden='"')
+            lab.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            lab.setFrame(False)
+            lab_font = QFont(t.font()); lab_font.setBold(True)
+            lab.setFont(lab_font)                                # bold, dark red
+            lab.setStyleSheet(f"color:{adj_table.LABEL_COLOR};")
+            lab.textChanged.connect(lambda text, kk=key: self._labels.__setitem__(kk, text))
+            lab.editingFinished.connect(self.refresh)      # the column refits when you leave it
+            self._label_edits[key] = lab
+            holder_l = QWidget()
+            holder_l.setAttribute(Qt.WA_TranslucentBackground, True)
+            hl_l = QHBoxLayout(holder_l)
+            hl_l.setContentsMargins(0, 0, 1, 1)
+            hl_l.setSpacing(0)
+            hl_l.addWidget(lab)
+            t.setCellWidget(k, 2, holder_l)
             for j, v in enumerate(r["values"]):
                 it = QTableWidgetItem(adj_table.format_value(v, dec))
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if j in r["bold"]:
                     it.setFont(heavy)
-                t.setItem(k, 2 + j, it)
+                t.setItem(k, 3 + j, it)
             edit = NumberLineEdit(adj_table.format_value(r["turn"], adj_table.TURN_DECIMALS),
                                   decimals=adj_table.TURN_DECIMALS)
             edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1254,7 +1358,7 @@ class IncrementalAdjDialog(QDialog):
             hl.setContentsMargins(0, 0, 1, 1)
             hl.setSpacing(0)
             hl.addWidget(edit)
-            t.setCellWidget(k, 8, holder)
+            t.setCellWidget(k, 9, holder)
         # exact size: columns from the content, all rows shown (no scrolling)
         widths = self._column_widths(dec)
         for c, w in enumerate(widths):
@@ -1271,6 +1375,16 @@ class IncrementalAdjDialog(QDialog):
         t.setFixedSize(table_w, table_h)
         t.horizontalScrollBar().setValue(0)
         t.verticalScrollBar().setValue(0)
+
+        # the "user input" marks sit over the Label and the Turn columns; the
+        # marks widget shares the table's left edge, so a centre is just the
+        # column's own centre plus the table's border
+        self._user_row.setFixedWidth(table_w)
+        centres = [fw + sum(widths[:c]) + 0.5 * widths[c] for c in (2, len(widths) - 1)]
+        for m, cx in zip(self._user_marks, centres):
+            mw = m.sizeHint().width()
+            m.setGeometry(int(cx - 0.5 * mw), 0, mw, self._user_row.height())
+            m.show()
 
         # reset buttons, one per row, in line with the rows: square, the row
         # height less 2 px, the x glyph centred in the button
@@ -1337,17 +1451,24 @@ class IncrementalAdjDialog(QDialog):
         savedir.remember(path)
         dec = self._decimals()
         c = self._ctx
+        # An export is always of the unit table: every turn 1.0, so the file
+        # shows the ratios themselves.  The turns typed in the window are left
+        # exactly as they are.
+        rows = adj_table.apply_turns(self._compute(self.selections(), self._from_home()), {}, dec,
+                                     self._round_up(), self._labels)
+        source = c["source"](self._from_home()) if callable(c.get("source")) else ""
         try:
             if ext == ".txt":
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write(adj_table.to_text(self._rows, dec, c["calc_name"], c["frame_name"], c["rpy_axes"]))
+                    f.write(adj_table.to_text(rows, dec, c["calc_name"], c["frame_name"],
+                                              c["rpy_axes"], source))
             else:
                 # previews of the first (at most two) origins in the table, each
                 # in its own frame at the default view, labelled with its name
                 sketches = []
                 if callable(c.get("sketch")):
                     seen = []
-                    for r in self._rows:
+                    for r in rows:
                         if r["origin"] not in seen:
                             seen.append(r["origin"])
                     for oi in seen[:adj_table.MAX_SKETCHES]:
@@ -1358,11 +1479,11 @@ class IncrementalAdjDialog(QDialog):
                         except Exception as exc:
                             print(f"origin preview could not be rendered ({exc!r}); exporting without it")
                 if ext == ".xlsx":
-                    adj_table.to_xlsx(path, self._rows, dec, c["calc_name"], c["frame_name"], c["rpy_axes"],
-                                      sketches=sketches)
+                    adj_table.to_xlsx(path, rows, dec, c["calc_name"], c["frame_name"], c["rpy_axes"],
+                                      sketches=sketches, source=source)
                 else:
-                    adj_table.to_png(path, self._rows, dec, c["calc_name"], c["frame_name"], c["rpy_axes"],
-                                     sketches=sketches)
+                    adj_table.to_png(path, rows, dec, c["calc_name"], c["frame_name"], c["rpy_axes"],
+                                     sketches=sketches, source=source)
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", f"{exc}")
             print(f"incremental adjustment table export failed: {exc}")

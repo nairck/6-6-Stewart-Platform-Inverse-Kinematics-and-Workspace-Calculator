@@ -157,6 +157,7 @@ class HexapodMainWindow(QMainWindow):
         self.origin_active = 1
         self.rpy_axes = config.RPY_AXES_DEFAULT      # which axis roll / pitch / yaw rotate about
         self.adj_config = settings_io.default_adj_config(1)   # Incremental Adj. Table set-up
+        self.adj_view = {}                   # its decimals / round-up / pose choice, session only
 
         # The fixed-size GUI panel that holds every MATLAB-positioned control.
         self.gui_panel = QWidget()
@@ -1059,11 +1060,25 @@ class HexapodMainWindow(QMainWindow):
         the program is changed."""
         from . import adj_table
 
-        def compute(selections):
+        def new_pose():
+            return tuple(self.get(t) for t in ("roll", "pitch", "yaw", "Pxval", "Pyval", "Pzval"))
+
+        def compute(selections, from_home=True):
+            # From Home: the zero-displacement configuration, which is the zero
+            # pose in every origin's frame.  From New: the pose now displayed.
             g = self._geom()
-            pose = tuple(self.get(t) for t in ("roll", "pitch", "yaw", "Pxval", "Pyval", "Pzval"))
+            pose = (0.0,) * 6 if from_home else new_pose()
             return adj_table.compute_rows(g, pose, self.origins, self.origin_active,
                                           self.rpy_axes, selections, self.get("actuatorLead"))
+
+        def source_text(from_home):
+            """How the export header describes the pose the table came from."""
+            if from_home:
+                return "from the home pose"
+            r, p, y, x, yy, z = new_pose()
+            return (f"from new absolute pose (X, Y, Z) = ({x:.3f}, {yy:.3f}, {z:.3f}) mm, "
+                    f"(roll, pitch, yaw) = ({r:.3f}, {p:.3f}, {y:.3f}) deg "
+                    f"in the '{self._origin_name()}' frame")
 
         def sketch(origin_index, width_in, height_in):
             # the main window's sketch for the exports: the joints expressed in
@@ -1084,11 +1099,11 @@ class HexapodMainWindow(QMainWindow):
             return platform_view.render_sketch_rgba(base_o, plat_o, width_in, height_in, 200, frame=frame)
 
         context = dict(calc_name=self.calc_name, frame_name=self._origin_name(),
-                       rpy_axes=self.rpy_axes, sketch=sketch)
+                       rpy_axes=self.rpy_axes, sketch=sketch, source=source_text)
         cfg = settings_io.normalise_adj_config(self.adj_config, len(self.origins))
         try:
             dlg = dialogs.IncrementalAdjDialog(self, self.origins, self.origin_active, compute,
-                                               context, cfg)
+                                               context, cfg, self.adj_view)
         except Exception as exc:
             print(f"the incremental adjustment table could not be opened: {exc!r}")
             return
@@ -1096,9 +1111,12 @@ class HexapodMainWindow(QMainWindow):
         if ip:
             dlg.setWindowIcon(QIcon(ip))
         dlg.setStyleSheet(config.qt_stylesheet())
-        if dlg.exec():
-            # Confirm: keep the set-up (ticks, turns, decimals); saved with
-            # Save Everything.  Close discards the changes.
+        confirmed = dlg.exec()
+        # the view settings survive either way, for as long as the program runs
+        self.adj_view = dlg.view_state()
+        if confirmed:
+            # Confirm: keep the set-up (ticks, labels, turns, decimals); saved
+            # with Save Everything.  Close discards those changes.
             self.adj_config = settings_io.normalise_adj_config(dlg.config(), len(self.origins))
             print("incremental adjustment table set-up confirmed.")
 

@@ -39,20 +39,96 @@ from . import kinematics as K
 from . import config
 
 LEG_COLORS = tuple(config.LEG_COLORS)
+LABEL_MAX = 18              # characters in a row's user label
+LABEL_COLOR = "#C00000"     # the Label column is bold and dark red everywhere
+LABEL_COL_W = 0.85          # minimum width of the Label column in the PNG [in]
 MAX_SKETCHES = 2            # origin previews shown in the exports (at most)
-SKETCH_H_IN = 1.3           # height of each preview drawing [in]
 SKETCH_LABEL_IN = 0.2       # room for the origin name above each preview [in]
-LEGEND_W_IN = 0.7           # width reserved for the leg legend [in]
-TABLE_COL_W = [1.45, 0.75] + [0.85] * 6 + [0.9]      # PNG column widths [in]
+TABLE_COL_W = [1.45, 0.75, LABEL_COL_W] + [0.85] * 6   # PNG columns [in]; no Turn column
+
+# The top section follows the table's own columns in both exports: the header
+# text spans the first four (Origin, Axis, Leg 1, Leg 2), each origin preview
+# spans the next two (Leg 3-4 and Leg 5-6) and is centred on them, and the leg
+# legend has the last column (Turn) to itself.
+TEXT_COLS = 4
+SKETCH_W_IN = TABLE_COL_W[4] + TABLE_COL_W[5]        # two Leg columns
+SKETCH_H_IN = 1.3
+SKETCH_BOX_FRAC = 0.94      # air left on each side of a preview inside its box
+ROW_IN = 15.0 / 72.0        # a default spreadsheet row [in]
+SKETCH_BAND_ROWS = 8        # rows 2 to 9: the band a preview is centred in
+SKETCH_ROWS_TWO = 6         # picture height limit [rows] with two previews
+SKETCH_ROWS_ONE = 8         # ... and with a single one, which spans E to H
+CROP_PAD_PX = 10            # white margin left around the drawing when cropping
 
 
-def sketch_size_in(count):
-    """(width, height) in inches of each preview when `count` are shown side by
-    side in the right half of the top section."""
-    right_half = 0.5 * sum(TABLE_COL_W) - LEGEND_W_IN
-    gap = 0.15
-    w = (right_half - gap * (count + 1)) / max(count, 1)
-    return min(w, SKETCH_H_IN * 1.7), SKETCH_H_IN
+def sketch_size_in(count=1):
+    """(width, height) in inches each preview is rendered at, before cropping."""
+    return SKETCH_W_IN, SKETCH_H_IN
+
+
+def sketch_box_in(count):
+    """(width, height) of the box a preview must fit inside: two Leg columns
+    wide less a little air on each side, and six rows tall when two previews
+    are shown, eight when only one is."""
+    rows = SKETCH_ROWS_ONE if count <= 1 else SKETCH_ROWS_TWO
+    return SKETCH_BOX_FRAC * SKETCH_W_IN, rows * ROW_IN
+
+
+def sketch_band_in():
+    """Height of the band the previews are centred in (rows 2 to 9) [in]."""
+    return SKETCH_BAND_ROWS * ROW_IN
+
+
+def crop_to_content(img, pad=CROP_PAD_PX):
+    """Trim the white margin around a rendered preview, leaving `pad` pixels.
+    Returns the image unchanged if it is blank."""
+    a = np.asarray(img)
+    if a.ndim != 3 or a.shape[2] < 3:
+        return a
+    ink = (a[..., :3].astype(int) < 250).any(axis=2)
+    if a.shape[2] == 4:
+        ink &= a[..., 3] > 0
+    if not ink.any():
+        return a
+    ys, xs = np.where(ink)
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + 1 + pad, a.shape[0])
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + 1 + pad, a.shape[1])
+    return a[y0:y1, x0:x1]
+
+
+def compose_preview(img, span_in, band_in, box_w_in, box_h_in):
+    """Put the cropped drawing on a white canvas shaped like the block of cells
+    it will occupy (the label's columns by the eight-row band), scaled to fit
+    the box inside it and centred both ways.
+
+    The centring is done in the image's own pixels, where it is exact, rather
+    than in offsets that depend on this code guessing Excel's column widths;
+    the canvas is then anchored corner to corner on those cells.
+    """
+    a = np.asarray(img)
+    h, w = a.shape[:2]
+    w_in, h_in = fit_in_box(a, box_w_in, box_h_in)       # size of the drawing itself
+    scale = w / float(w_in)                              # pixels per inch of it
+    cw = max(int(round(span_in * scale)), w)
+    ch = max(int(round(band_in * scale)), h)
+    canvas = np.full((ch, cw, a.shape[2]), 255, dtype=a.dtype)
+    if a.shape[2] == 4:
+        canvas[..., 3] = 255
+    y0, x0 = (ch - h) // 2, (cw - w) // 2
+    canvas[y0:y0 + h, x0:x0 + w] = a
+    return canvas
+
+
+def fit_in_box(img, box_w_in, box_h_in):
+    """The largest (width, height) in inches with the image's own aspect ratio
+    that fits inside the box, so a picture is never stretched."""
+    h, w = np.asarray(img).shape[:2]
+    aspect = w / float(h)
+    if box_w_in / box_h_in >= aspect:
+        return box_h_in * aspect, box_h_in           # height-limited
+    return box_w_in, box_w_in / aspect               # width-limited
 
 AXES = ("X", "Y", "Z", "Roll", "Pitch", "Yaw")
 LEGS = tuple(f"Leg {j}" for j in range(1, 7))
@@ -173,8 +249,9 @@ def is_unit(v, decimals):
 
 DEFAULT_TURN = 1.0
 TURN_DECIMALS = 1
-ROUND_UP_THRESHOLD = 0.99      # "Round up above 0.99": |unit ratio| > this reads as 1
-DEFAULT_ROUND_UP = True
+ROUND_UP_CHOICES = (0.9, 0.95, 0.99, 0.999, 0.0)   # "Round up above:" menu; 0 = off
+ROUND_UP_OFF_TEXT = "- off -"
+DEFAULT_ROUND_UP = 0.99        # |unit ratio| above this, but below 1, reads as 1
 TURN_MAX = 99999.9        # |turn| is capped here, so the table width is bounded
 
 
@@ -187,18 +264,50 @@ def row_key(row):
     return (row["origin"], row["axis"])
 
 
+def round_up_text(value):
+    """How a round-up threshold is written in the menu."""
+    return ROUND_UP_OFF_TEXT if not value else f"{float(value):g}"
+
+
+def round_up_value(text):
+    """The threshold a menu entry stands for (0 = no rounding up)."""
+    if str(text).strip().lower() == ROUND_UP_OFF_TEXT.lower():
+        return 0.0
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_ROUND_UP
+
+
 def unit_ratios(row, decimals, round_up=DEFAULT_ROUND_UP):
-    """The row's unit ratios as the table reads them: rounded to `decimals`
-    and, when `round_up` is set, any magnitude above ROUND_UP_THRESHOLD (but
-    not yet 1) taken to exactly +/-1, so 0.997 at three decimals reads 1.000."""
+    """The row's unit ratios as the table reads them: rounded to `decimals`,
+    then any magnitude above the `round_up` threshold (but not yet 1) taken to
+    exactly +/-1, so with the default 0.99 a ratio of 0.997 reads 1.000.
+    A threshold of 0 or 1 leaves the rounded values alone."""
     v = np.round(np.asarray(row["ratios"], float), int(decimals))
-    if round_up:
-        snap = (np.abs(v) > ROUND_UP_THRESHOLD) & (np.abs(v) < 1.0)
+    thr = float(round_up) if round_up else 1.0
+    if 0.0 < thr < 1.0:
+        snap = (np.abs(v) > thr) & (np.abs(v) < 1.0)
         v = np.where(snap, np.sign(v), v)
     return v
 
 
-def apply_turns(rows, turns, decimals=DEFAULT_DECIMALS, round_up=DEFAULT_ROUND_UP):
+def apply_labels(rows, labels):
+    """Attach each row's label: the user's text when there is one, otherwise
+    the row's axis, which is what the column shows until it is edited."""
+    labels = labels or {}
+    for r in rows:
+        key = row_key(r)
+        text = labels[key] if key in labels else r["axis"]
+        r["label"] = str(text)[:LABEL_MAX]
+    return rows
+
+
+def _label(row):
+    return str(row.get("label", row.get("axis", "")))
+
+
+def apply_turns(rows, turns, decimals=DEFAULT_DECIMALS, round_up=DEFAULT_ROUND_UP, labels=None):
     """Attach to every row the turn multiplier (from `turns`, keyed by
     row_key, default DEFAULT_TURN), the unit ratios as the table reads them
     (`unit`, see unit_ratios), the leg entries values = unit * turn, and the
@@ -207,9 +316,10 @@ def apply_turns(rows, turns, decimals=DEFAULT_DECIMALS, round_up=DEFAULT_ROUND_U
     Bold is decided from the UNIT state (turn = 1.0): the legs whose unit ratio
     reads +/-1 at the chosen decimals.  Those legs stay bold whatever turns are
     entered afterwards, so the reference legs of each move remain visible; the
-    set is recomputed only when the decimals or the round-up option change,
+    set is recomputed only when the decimals or the round-up threshold change,
     since both change what "reads 1" means.  Returns the rows.
     """
+    apply_labels(rows, labels)
     for r in rows:
         m = float(turns.get(row_key(r), DEFAULT_TURN))
         r["turn"] = clamp_turn(m)
@@ -239,27 +349,29 @@ def _turn(row):
 SIGN_NOTE = "(sign gives the direction of turn: positive extends the leg, negative retracts it)"
 
 
-def header_lines(calc_name, frame_name, rpy_axes, decimals):
-    """The lines above the table in every export: title, provenance, and the
-    one-sentence definition of a leg entry.  calc_name and decimals are
-    accepted for the call signature but not shown."""
-    now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+def header_lines(calc_name, frame_name, rpy_axes, decimals, source=""):
+    """The lines above the table in every export: title, provenance and the
+    one-sentence definition of a leg entry.  `source` says which pose the table
+    was computed from (see the dialog's From Home / From New choice).
+    calc_name and decimals are accepted for the call signature but not shown."""
+    now = _dt.datetime.now().strftime("%d %B %Y")     # e.g. 28 August 2026
     return [
         "Incremental Adjustment Table",
-        f"Generated {now}; frame '{frame_name}'; roll/pitch/yaw about {rpy_axes[0]}, {rpy_axes[1]}, {rpy_axes[2]}",
+        f"Generated {now}{(' ' + source) if source else ''}; roll/pitch/yaw about "
+        f"{rpy_axes[0]}, {rpy_axes[1]}, {rpy_axes[2]}",
         "Leg entry = unit ratio x Turn [deg]: the actuator turn of each leg for a small move in the + direction "
         "of the row's axis of that origin's frame " + SIGN_NOTE + ".",
     ]
 
 
-def to_text(rows, decimals, calc_name, frame_name, rpy_axes):
+def to_text(rows, decimals, calc_name, frame_name, rpy_axes, source=""):
     """Plain-text table with box lines, origin names once per group."""
-    head = header_lines(calc_name, frame_name, rpy_axes, decimals)
-    cols = ["Origin", "Axis"] + list(LEGS) + ["Turn [deg]"]
+    head = header_lines(calc_name, frame_name, rpy_axes, decimals, source)
+    cols = ["Origin", "Axis", "Label"] + list(LEGS)     # the Turn column is not exported
     body = []
     for r in rows:
-        body.append([r["name"], r["axis"]] + [format_value(v, decimals) for v in _values(r)]
-                    + [format_value(_turn(r), TURN_DECIMALS)])
+        body.append([r["name"], r["axis"], _label(r)]
+                    + [format_value(v, decimals) for v in _values(r)])
     widths = [len(c) for c in cols]
     for line in body:
         for i, cell in enumerate(line):
@@ -271,8 +383,8 @@ def to_text(rows, decimals, calc_name, frame_name, rpy_axes):
         for cell, w, al in zip(cells, widths, align):
             out.append(" " + (cell.ljust(w) if al == "l" else cell.rjust(w)) + " ")
         return "|" + "|".join(out) + "|"
-    align = ["l", "l"] + ["r"] * 7
-    lines = list(head) + ["", sep, fmt_line(cols, ["l"] * 9), sep]
+    align = ["l", "l", "l"] + ["r"] * 6
+    lines = list(head) + ["", sep, fmt_line(cols, ["l"] * len(cols)), sep]
     prev_origin = None
     for r, line in zip(rows, body):
         if prev_origin is not None and r["origin"] != prev_origin:
@@ -312,6 +424,9 @@ class _Xlsx:
     S_LEG_HDR = 10          # + j: bold, coloured, bordered, centred
     S_LEGEND = 16           # + j: bold, coloured, no border
     S_TITLE_WRAP, S_WRAP, S_LABEL = 22, 23, 24
+    S_TEXT_C_NW = 25        # centred and bordered, never wrapped
+    S_NOTE_C = 26           # centred italic ("user input")
+    S_LABEL_C = 27          # the Label column: bold, centred, bordered, never wrapped
 
     def __init__(self, decimals):
         self.rows = {}          # row -> {col: (kind, value, style)}
@@ -321,10 +436,12 @@ class _Xlsx:
         self.images = []        # (png_bytes, col, row, col_off_in, width_in, height_in)
         self.row_heights = {}   # row -> points
 
-    def add_image(self, png_bytes, col, row, width_in, height_in, col_off_in=0.0):
-        """A picture anchored at (col, row), 1-based, offset col_off_in inches
-        into that column."""
-        self.images.append((png_bytes, col, row, col_off_in, width_in, height_in))
+    def add_image(self, png_bytes, col, row, col2, row2):
+        """A picture anchored corner to corner on a cell range: the top-left of
+        (col, row) to the top-left of (col2, row2), all 1-based.  Excel resolves
+        the rectangle from its own column widths and row heights, so nothing
+        depends on this code's idea of them."""
+        self.images.append((png_bytes, col, row, col2, row2))
 
     def row_height(self, row, points):
         self.row_heights[row] = points
@@ -353,15 +470,16 @@ class _Xlsx:
             '<numFmt numFmtId="165" formatCode="0.0"/>'
             '<numFmt numFmtId="166" formatCode="0.000000"/>'
             '</numFmts>'
-            '<fonts count="11">'
+            '<fonts count="12">'
             '<font><sz val="11"/><name val="Calibri"/></font>'
             '<font><b/><sz val="11"/><name val="Calibri"/></font>'
             '<font><b/><sz val="13"/><name val="Calibri"/></font>'
             '<font><i/><sz val="11"/><name val="Calibri"/></font>'
             '<font><sz val="11"/><color rgb="FF1F4E79"/><name val="Calibri"/></font>'
             + "".join(f'<font><b/><sz val="11"/><color rgb="FF{c[1:].upper()}"/><name val="Calibri"/></font>'
-                      for c in LEG_COLORS) +
-            '</fonts>'
+                      for c in LEG_COLORS)
+            + f'<font><b/><sz val="11"/><color rgb="FF{LABEL_COLOR[1:]}"/><name val="Calibri"/></font>'   # 11: the Label column
+            + '</fonts>'
             '<fills count="2"><fill><patternFill patternType="none"/></fill>'
             '<fill><patternFill patternType="gray125"/></fill></fills>'
             '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
@@ -369,7 +487,7 @@ class _Xlsx:
             '<top style="thin"><color auto="1"/></top><bottom style="thin"><color auto="1"/></bottom><diagonal/></border>'
             '</borders>'
             '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-            '<cellXfs count="25">'
+            '<cellXfs count="28">'
             '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'                                   # default
             '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>'                     # title
             '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>'                     # italic
@@ -389,10 +507,17 @@ class _Xlsx:
             '<alignment horizontal="right" vertical="center"/></xf>'                                           # unit ratio bold
             + "".join(f'<xf numFmtId="0" fontId="{5 + j}" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">'
                       '<alignment horizontal="center" vertical="center"/></xf>' for j in range(6))
-            + "".join(f'<xf numFmtId="0" fontId="{5 + j}" fillId="0" borderId="0" xfId="0" applyFont="1"/>' for j in range(6)) +
+            + "".join(f'<xf numFmtId="0" fontId="{5 + j}" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">'
+                      '<alignment horizontal="center" vertical="center"/></xf>' for j in range(6)) +
             '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
             '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
             '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="bottom"/></xf>'
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1">'
+            '<alignment horizontal="center" vertical="center"/></xf>'
+            '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1">'
+            '<alignment horizontal="center"/></xf>'
+            '<xf numFmtId="0" fontId="11" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1">'
+            '<alignment horizontal="center" vertical="center"/></xf>'
             '</cellXfs>'
             '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
             '</styleSheet>'
@@ -444,37 +569,24 @@ class _Xlsx:
     def _row_px(self, r):
         return int(round(self.row_heights.get(r, 15.0) * 96.0 / 72.0))
 
-    def _anchor_to(self, col, row, off_in, w_in, h_in):
-        """(col, colOff, row, rowOff) of the far corner of a picture, from its
-        near-corner cell and offset and its size in inches."""
-        px = 96.0
-        x = off_in * px + w_in * px
-        c = col
-        while x >= self._col_px(c):
-            x -= self._col_px(c)
-            c += 1
-        y = h_in * px
-        r = row
-        while y >= self._row_px(r):
-            y -= self._row_px(r)
-            r += 1
-        return c, int(x * 9525), r, int(y * 9525)
-
     def _drawing_xml(self):
         emu = 914400
         anchors = []
-        for k, (_, col, row, off_in, w_in, h_in) in enumerate(self.images, start=1):
-            c2, xoff2, r2, yoff2 = self._anchor_to(col, row, off_in, w_in, h_in)
+        for k, (_, col, row, col2, row2) in enumerate(self.images, start=1):
+            # Corner-to-corner anchor: Excel puts the picture on exactly those
+            # cells, from its own geometry.  The drawing is already centred
+            # inside its canvas (compose_preview), so there is no offset to get
+            # wrong here.
             anchors.append(
                 '<xdr:twoCellAnchor editAs="oneCell">'
-                f'<xdr:from><xdr:col>{col - 1}</xdr:col><xdr:colOff>{int(off_in * 96 * 9525)}</xdr:colOff>'
+                f'<xdr:from><xdr:col>{col - 1}</xdr:col><xdr:colOff>0</xdr:colOff>'
                 f'<xdr:row>{row - 1}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
-                f'<xdr:to><xdr:col>{c2 - 1}</xdr:col><xdr:colOff>{xoff2}</xdr:colOff>'
-                f'<xdr:row>{r2 - 1}</xdr:row><xdr:rowOff>{yoff2}</xdr:rowOff></xdr:to>'
+                f'<xdr:to><xdr:col>{col2 - 1}</xdr:col><xdr:colOff>0</xdr:colOff>'
+                f'<xdr:row>{row2 - 1}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'
                 f'<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="{k + 1}" name="Preview {k}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'
                 f'<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId{k}"/>'
                 '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
-                f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{int(w_in * emu)}" cy="{int(h_in * emu)}"/></a:xfrm>'
+                '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>'
                 '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>'
                 '<xdr:clientData/></xdr:twoCellAnchor>')
         return (
@@ -554,7 +666,7 @@ class _Xlsx:
                     z.writestr(f"xl/media/image{k}.png", img[0])
 
 
-def to_xlsx(path, rows, decimals, calc_name, frame_name, rpy_axes, sketches=()):
+def to_xlsx(path, rows, decimals, calc_name, frame_name, rpy_axes, sketches=(), source=""):
     """Excel workbook: one visible sheet laid out like the PNG.  Top section:
     the title and definition in merged, wrapped cells over columns A..E (row
     heights set for the wrapped lines), up to MAX_SKETCHES origin previews on
@@ -568,45 +680,60 @@ def to_xlsx(path, rows, decimals, calc_name, frame_name, rpy_axes, sketches=()):
     from matplotlib.image import imsave
     X = _Xlsx(decimals)
     U = _Xlsx(6)
-    head = header_lines(calc_name, frame_name, rpy_axes, decimals)
+    head = header_lines(calc_name, frame_name, rpy_axes, decimals, source)
     sketches = list(sketches)[:MAX_SKETCHES]
-    widths_chars = {1: 18, 2: 9, 3: 11, 4: 11, 5: 11, 6: 11, 7: 11, 8: 11, 9: 11}
-    for c, w in widths_chars.items():
-        X.width(c, w)
+    # every column width is set first: the preview placement below measures the
+    # columns it centres on
+    leg_col = 4                                    # D: the first Leg column
+    turn_col = 10                                  # J: the Turn column, beside the table
+    label_chars = max([len("Label")] + [len(_label(r)) for r in rows])
+    X.width(1, 18)
+    X.width(2, 9)
+    X.width(3, max(11, label_chars + 2))           # the Label column fits its longest entry
+    for c in range(leg_col, leg_col + 6):
+        X.width(c, 11)
+    X.width(turn_col, 10.9)
     # --- top section: a fixed block of 9 rows ---
-    #   row 1        title (A1:E1 merged, 20 pt)              preview names (F1:G1, H1:I1)
-    #   rows 2-3     provenance (A2:E3 merged, wrapped)       previews from row 2 (F onward)
-    #   rows 4-9     definition (A4:E9 merged, wrapped)       legend in the Turn column, rows 2-7
+    #   row 1        title (A1:D1 merged, 20 pt)         preview names (E1:F1, G1:H1)
+    #   rows 2-4     provenance (A2:D4 merged, wrapped)   previews from row 2 (E and G)
+    #   rows 5-9     definition (A5:D9 merged, wrapped)   legend alone in column I, rows 2-7
     X.row_height(1, 20)
     for rr in range(2, 10):
         X.row_height(rr, 15)
-    blocks = [(1, 1), (2, 3), (4, 9)]
+    blocks = [(1, 1), (2, 4), (5, 9)]
     for (r0, r1), line, style in zip(blocks, head, (X.S_TITLE_WRAP, X.S_WRAP, X.S_WRAP)):
         X.cell(r0, 1, line, style)
-        X.merge(r0, 1, r1, 5)
-    if sketches:
-        col_in = X._col_px(6) / 96.0                                    # width of a preview column [in]
-        img_h = SKETCH_H_IN
-        slot_w = 1.25
-        for k, (name, img) in enumerate(sketches):
-            buf = io.BytesIO()
-            imsave(buf, img, format="png")
-            w = min(slot_w, img_h * img.shape[1] / img.shape[0])      # true aspect ratio
-            x_in = k * (slot_w + 0.1) + 0.5 * (slot_w - w)             # from column F's left edge
-            col = 6 + int(x_in // col_in)
-            X.add_image(buf.getvalue(), col, 2, w, img_h, col_off_in=x_in - (col - 6) * col_in)
-            X.cell(1, 6 + 2 * k, name, X.S_LABEL)
-            X.merge(1, 6 + 2 * k, 1, 7 + 2 * k)
+        X.merge(r0, 1, r1, TEXT_COLS)
+    sketches = [(name, crop_to_content(img)) for name, img in sketches]
+    span = 4 if len(sketches) == 1 else 2                # E:H for one, E:F and G:H for two
+    _, box_h_in = sketch_box_in(len(sketches))           # height limit: six rows, or eight
+    band_in = sum(X._row_px(2 + r) for r in range(SKETCH_BAND_ROWS)) / 96.0
+    for k, (name, img) in enumerate(sketches):
+        first = TEXT_COLS + 1 + span * k                 # E for the first, G for the second
+        # the picture keeps its own aspect ratio inside the box, is centred on
+        # the label's columns, and its size is carried by the anchor, so Excel
+        # never stretches it
+        # the box is the columns the name spans, by their real widths, and the
+        # height limit above; the picture keeps its own aspect ratio inside it
+        span_in = sum(X._col_px(first + c) for c in range(span)) / 96.0
+        canvas = compose_preview(img, span_in, band_in, SKETCH_BOX_FRAC * span_in, box_h_in)
+        buf = io.BytesIO()
+        imsave(buf, canvas, format="png")
+        # anchored on the label's own columns and the eight-row band
+        X.add_image(buf.getvalue(), first, 2, first + span, 2 + SKETCH_BAND_ROWS)
+        X.cell(1, first, name, X.S_LABEL)
+        X.merge(1, first, 1, first + span - 1)
     for j, name in enumerate(LEGS):
         X.cell(2 + j, 9, name, X.S_LEGEND + j)
     r_hdr = 11
     n = len(rows)
-    cols = ["Origin", "Axis"] + list(LEGS) + ["Turn [deg]"]
+    cols = ["Origin", "Axis", "Label"] + list(LEGS) + ["Turn [deg]"]
     for c, name in enumerate(cols, start=1):
-        X.cell(r_hdr, c, name, X.S_LEG_HDR + (c - 3) if 3 <= c <= 8 else X.S_HEADER)
+        style = X.S_LEG_HDR + (c - leg_col) if leg_col <= c < leg_col + 6 else X.S_HEADER
+        X.cell(r_hdr, c, name, style)
+    X.cell(r_hdr - 1, turn_col, "user input", X.S_NOTE_C)
     for c, name in enumerate(["Origin", "Axis"] + list(LEGS), start=1):
         U.cell(r_hdr, c, name, U.S_HEADER)
-    turn_col = 9
     prev_origin = None
     group_start = None
     for k, r in enumerate(rows):
@@ -619,13 +746,15 @@ def to_xlsx(path, rows, decimals, calc_name, frame_name, rpy_axes, sketches=()):
             prev_origin = r["origin"]
         X.cell(rr, 1, r["name"] if first else "", X.S_TEXT_C)
         X.cell(rr, 2, r["axis"], X.S_TEXT_C)
+        X.cell(rr, 3, _label(r), X.S_LABEL_C)     # the label: bold, the column widens, never wraps
         U.cell(rr, 1, r["name"], U.S_TEXT_C)
         U.cell(rr, 2, r["axis"], U.S_TEXT_C)
         units = r["unit"] if "unit" in r else unit_ratios(r, decimals)
         for j, v in enumerate(units):
             bold = _bold(r, j, float(v) * float(_turn(r)), decimals)
             U.cell(rr, 3 + j, float(v), U.S_UNIT_B if bold else U.S_UNIT)
-            X.formula(rr, 3 + j, f"'Unit ratios'!{_col_letter(3 + j)}{rr}*${_col_letter(turn_col)}${rr}",
+            X.formula(rr, leg_col + j,
+                      f"'Unit ratios'!{_col_letter(3 + j)}{rr}*${_col_letter(turn_col)}${rr}",
                       X.S_NUM_B if bold else X.S_NUM)
         X.cell(rr, turn_col, float(_turn(r)), X.S_TURN)
     if group_start is not None and n - group_start > 1:
@@ -637,7 +766,7 @@ def to_xlsx(path, rows, decimals, calc_name, frame_name, rpy_axes, sketches=()):
     X.save(path, hidden=U)
 
 
-def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketches=()):
+def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketches=(), source=""):
     """Rendered table (white background, black grid, heavy bold for entries
     reading +/-1, merged origin cells) via matplotlib's Agg backend, sized to
     the content.  The top section has the title and definition on its left
@@ -649,19 +778,23 @@ def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketc
     from matplotlib import patheffects
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
-    head = header_lines(calc_name, frame_name, rpy_axes, decimals)
-    cols = ["Origin", "Axis"] + list(LEGS) + ["Turn [deg]"]
+    head = header_lines(calc_name, frame_name, rpy_axes, decimals, source)
+    cols = ["Origin", "Axis", "Label"] + list(LEGS)     # the Turn column is not exported
     n = len(rows)
     col_w = list(TABLE_COL_W)
+    # the Label column grows to fit the longest label on one line
+    label_chars = max([len("Label")] + [len(_label(r)) for r in rows])
+    col_w[2] = max(LABEL_COL_W, 0.092 * label_chars + 0.2)   # bold text is a little wider
     row_h = 0.28
     table_w = sum(col_w)
     fig_w = table_w + 0.4
-    sketches = list(sketches)[:MAX_SKETCHES]
+    x_edges = np.concatenate([[0.2], 0.2 + np.cumsum(col_w)])
+    sketches = [(name, crop_to_content(img)) for name, img in list(sketches)[:MAX_SKETCHES]]
     # header text wrapped at the left half of the table width
     probe = Figure(figsize=(1, 1), dpi=dpi)
     FigureCanvasAgg(probe)
     pr = probe.canvas.get_renderer()
-    limit = 0.5 * table_w - 0.15
+    limit = sum(col_w[:TEXT_COLS]) - 0.15      # the header text spans the first columns
 
     def width_of(text, size, weight):
         tx = probe.text(0, 0, text, fontsize=size, fontweight=weight)
@@ -682,7 +815,7 @@ def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketc
                 cur = trial
         wrapped.append((cur, size, weight))
     text_h = 0.15 + 0.22 * len(wrapped)
-    pict_h = (0.12 + SKETCH_LABEL_IN + SKETCH_H_IN) if sketches else 0.0
+    pict_h = (0.12 + SKETCH_LABEL_IN + sketch_band_in()) if sketches else 0.0
     top_h = max(text_h, pict_h) + 0.1
     fig_h = top_h + row_h * (n + 1) + 0.3
     fig = Figure(figsize=(fig_w, fig_h), dpi=dpi)
@@ -693,33 +826,34 @@ def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketc
     for line, size, weight in wrapped:
         ax.text(0.2, y, line, fontsize=size, fontweight=weight, va="top", ha="left")
         y -= 0.22
-    # previews centred in the right half (between the middle and the legend)
-    if sketches:
-        area_x0 = 0.2 + 0.5 * table_w
-        area_x1 = 0.2 + table_w - LEGEND_W_IN
-        gap = 0.15
-        ws = []
-        for _, img in sketches:
-            ws.append(min(SKETCH_H_IN * img.shape[1] / img.shape[0],
-                          (area_x1 - area_x0 - gap * (len(sketches) + 1)) / len(sketches)))
-        total = sum(ws) + gap * (len(sketches) - 1)
-        x = 0.5 * (area_x0 + area_x1) - 0.5 * total
-        y_img = fig_h - 0.12 - SKETCH_LABEL_IN - SKETCH_H_IN
-        for (name, img), w in zip(sketches, ws):
-            ax.text(x + 0.5 * w, y_img + SKETCH_H_IN + 0.04, name, fontsize=8, fontweight="bold",
-                    ha="center", va="bottom")
-            ax_img = fig.add_axes([x / fig_w, y_img / fig_h, w / fig_w, SKETCH_H_IN / fig_h])
-            ax_img.imshow(img, aspect="auto", interpolation="lanczos")
-            ax_img.set_axis_off()
-            x += w + gap
+    # Each preview spans two Leg columns (a single one spans all four, E to H
+    # in the workbook) and is centred on them, its name directly above it and
+    # its top edge on the label's lower edge; the legend has the last column.
+    y_top = fig_h - 0.12 - SKETCH_LABEL_IN
+    band = sketch_band_in()                      # rows 2 to 9 of the workbook
+    for k, (name, img) in enumerate(sketches):
+        if len(sketches) == 1:
+            x0, x1 = x_edges[TEXT_COLS], x_edges[TEXT_COLS + 4]
+        else:
+            x0, x1 = x_edges[TEXT_COLS + 2 * k], x_edges[TEXT_COLS + 2 * k + 2]
+        w, h = fit_in_box(img, min(SKETCH_BOX_FRAC * (x1 - x0), sketch_box_in(len(sketches))[0]),
+                          sketch_box_in(len(sketches))[1])
+        y_img = y_top - 0.5 * (band + h)                  # centred in the band
+        ax.text(0.5 * (x0 + x1), y_top + 0.04, name, fontsize=8, fontweight="bold",
+                ha="center", va="bottom")
+        ax_img = fig.add_axes([(0.5 * (x0 + x1) - 0.5 * w) / fig_w, y_img / fig_h,
+                               w / fig_w, h / fig_h])
+        ax_img.imshow(img, aspect="auto", interpolation="lanczos")
+        ax_img.set_axis_off()
+    legend_x = 0.5 * (x_edges[-2] + x_edges[-1])
+    legend_top = y_top if sketches else fig_h - 0.15
     for j, name in enumerate(LEGS):
-        ax.text(0.2 + table_w, fig_h - 0.15 - j * 0.24, name, fontsize=8.5, fontweight="bold",
-                color=LEG_COLORS[j], ha="right", va="top")
+        ax.text(legend_x, legend_top - j * 0.24, name, fontsize=8.5, fontweight="bold",
+                color=LEG_COLORS[j], ha="center", va="top")
     y_top = fig_h - top_h
-    x_edges = np.concatenate([[0.2], 0.2 + np.cumsum(col_w)])
     y_edges = [y_top - k * row_h for k in range(n + 2)]
     for c, name in enumerate(cols):
-        color = LEG_COLORS[c - 2] if 2 <= c <= 7 else "black"
+        color = LEG_COLORS[c - 3] if 3 <= c <= 8 else "black"
         ax.text(0.5 * (x_edges[c] + x_edges[c + 1]), 0.5 * (y_edges[0] + y_edges[1]), name,
                 ha="center", va="center", fontsize=8.5, fontweight="bold", color=color)
     groups = {}
@@ -727,16 +861,16 @@ def to_png(path, rows, decimals, calc_name, frame_name, rpy_axes, dpi=200, sketc
         groups.setdefault(r["origin"], []).append(k)
         yc = 0.5 * (y_edges[k + 1] + y_edges[k + 2])
         ax.text(0.5 * (x_edges[1] + x_edges[2]), yc, r["axis"], ha="center", va="center", fontsize=8.5)
+        ax.text(0.5 * (x_edges[2] + x_edges[3]), yc, _label(r), ha="center", va="center",
+                fontsize=8.5, fontweight="bold", color=LABEL_COLOR)
         for j, v in enumerate(_values(r)):
             if _bold(r, j, v, decimals):
-                ax.text(x_edges[j + 3] - 0.08, yc, format_value(v, decimals), ha="right", va="center",
+                ax.text(x_edges[j + 4] - 0.08, yc, format_value(v, decimals), ha="right", va="center",
                         fontsize=8.5, fontweight="black",
                         path_effects=[patheffects.withStroke(linewidth=0.9, foreground="black")])
             else:
-                ax.text(x_edges[j + 3] - 0.08, yc, format_value(v, decimals), ha="right", va="center",
+                ax.text(x_edges[j + 4] - 0.08, yc, format_value(v, decimals), ha="right", va="center",
                         fontsize=8.5)
-        ax.text(x_edges[9] - 0.08, yc, format_value(_turn(r), TURN_DECIMALS), ha="right", va="center",
-                fontsize=8.5)
     sizes = group_sizes(rows)
     for oi, ks in groups.items():
         name = display_name(rows[ks[0]], sizes)

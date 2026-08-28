@@ -13,7 +13,9 @@ in the MATLAB tool:
     origin_active = <k>                           (1 <= k <= number of origin lines)
     adj_decimals = 3                              (optional block: the Incremental
     adj_1 = 'XYZ---', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0   Adj. Table set-up, one line per
-    adj_2 = '---RPW', 15.0, 1.0, 1.0, 1.0, 1.0, 1.0  origin: ticked-axis mask, six turns)
+    adj_2 = '---RPW', 15.0, 1.0, 1.0, 1.0, 1.0, 1.0  origin: ticked-axis mask, six
+    adj_3 = 'X-----', 1.0, ..., 'focus in', '', ...  turns, and the six labels when
+                                                    any were typed)
 
 Every base and platform joint carries its own X, Y, Z.  An origin (point of
 interest) is a full frame: its offset X, Y, Z [mm] and its orientation roll,
@@ -91,12 +93,14 @@ ADJ_AXES = ("X", "Y", "Z", "Roll", "Pitch", "Yaw")
 ADJ_MASK_LETTERS = "XYZRPW"
 ADJ_DEFAULT_DECIMALS = 3
 ADJ_DEFAULT_TURN = 1.0
+ADJ_LABEL_MAX = 18          # characters in a row's label; empty means "use the axis"
 
 
 def default_adj_config(n_origins=1):
     """Nothing ticked, all turns 1.0, three decimals."""
     return dict(decimals=ADJ_DEFAULT_DECIMALS,
-                rows=[dict(axes=set(), turns=[ADJ_DEFAULT_TURN] * 6) for _ in range(n_origins)])
+                rows=[dict(axes=set(), turns=[ADJ_DEFAULT_TURN] * 6, labels=[""] * 6)
+                      for _ in range(n_origins)])
 
 
 def normalise_adj_config(cfg, n_origins):
@@ -123,7 +127,10 @@ def normalise_adj_config(cfg, n_origins):
             if v != v:
                 v = ADJ_DEFAULT_TURN
             clean.append(max(-99999.9, min(99999.9, v)))
-        rows.append(dict(axes=axes, turns=clean))
+        labels = [str(t) for t in (src.get("labels") or [])][:6]
+        labels += [""] * (6 - len(labels))
+        labels = [t.replace("'", "").replace('"', "")[:ADJ_LABEL_MAX] for t in labels]
+        rows.append(dict(axes=axes, turns=clean, labels=labels))
     return dict(decimals=dec, rows=rows)
 
 
@@ -131,7 +138,8 @@ def adj_config_is_default(cfg):
     if int(cfg.get("decimals", ADJ_DEFAULT_DECIMALS)) != ADJ_DEFAULT_DECIMALS:
         return False
     for r in cfg.get("rows", []):
-        if r.get("axes") or any(abs(t - ADJ_DEFAULT_TURN) > 0 for t in r.get("turns", [])):
+        if (r.get("axes") or any(abs(t - ADJ_DEFAULT_TURN) > 0 for t in r.get("turns", []))
+                or any(t for t in r.get("labels", []))):
             return False
     return True
 
@@ -217,8 +225,11 @@ def write_settings(path, values, name, origins=None, active=1, rpy_axes=None, ad
         if not adj_config_is_default(adj):
             f.write(f"adj_decimals = {adj['decimals']}\n")
             for i, r in enumerate(adj["rows"]):
-                f.write(f"adj_{i + 1} = '{adj_mask(r['axes'])}', "
-                        + ", ".join(f"{t:.1f}" for t in r["turns"]) + "\n")
+                line = (f"adj_{i + 1} = '{adj_mask(r['axes'])}', "
+                        + ", ".join(f"{t:.1f}" for t in r["turns"]))
+                if any(r["labels"]):          # the labels only when some were typed
+                    line += ", " + ", ".join(f"'{t}'" for t in r["labels"])
+                f.write(line + "\n")
     return path
 
 
@@ -350,18 +361,29 @@ def _validate(raw_lines):
         else:
             adj["decimals"] = int(m.group(1))
         idx += 1
-        pat = (r"^adj_(\d+) = '([" + ADJ_MASK_LETTERS + r"\-]{6})'" + "".join(", (" + NUMBER + ")" for _ in range(6)) + "$")
+        # Only the head of an adj_k line is matched strictly.  What follows is
+        # read leniently: the quoted items are the labels (a label may hold any
+        # character except a quote) and the six numbers left after removing
+        # them are the turns, so a label can never make a file look corrupt.
+        pat = r"^adj_(\d+) = '([" + ADJ_MASK_LETTERS + r"\-]{6})'(.*)$"
         k = 0
         while idx < len(raw_lines) and raw_lines[idx].startswith("adj_"):
             m = re.match(pat, raw_lines[idx])
-            if not m or int(m.group(1)) != k + 1:
+            labels, turns = [], []
+            if m:
+                rest = m.group(3)
+                labels = re.findall(r"'([^']*)'", rest)
+                turns = re.findall(NUMBER, re.sub(r"'[^']*'", "", rest))
+            if not m or int(m.group(1)) != k + 1 or len(turns) < 6:
                 errors.append(f"Line {idx + 1}: '{raw_lines[idx]}'  - Expected: "
                               f"\"adj_{k + 1} = 'XYZRPW', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0\"")
                 idx += 1
                 continue
             if k < len(adj["rows"]):
+                labels = (labels + [""] * 6)[:6]
                 adj["rows"][k] = dict(axes=adj_axes_from_mask(m.group(2)),
-                                      turns=[round(float(m.group(3 + j)), 1) for j in range(6)])
+                                      turns=[round(float(t), 1) for t in turns[:6]],
+                                      labels=labels)
             else:
                 reasons.append("adj_k lines beyond the number of origins dropped")
             k += 1
