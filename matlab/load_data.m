@@ -194,18 +194,32 @@ function load_data()
             adjCfg.decimals = str2double(tok{1}{1});
         end
         idx = idx + 1;
-        patA = ['^adj_(\d+) = ''([XYZRPW\-]{6})''' repmat([', (' NUM ')'], 1, 6) '$'];
+        % Only the head of an adj_k line is matched strictly.  What follows is
+        % read leniently: the quoted items are the labels (a label may hold any
+        % character except a quote, which is why they are not part of the
+        % pattern), and the six numbers left after removing them are the turns.
+        % A label can therefore never make a settings file look corrupt.
+        patA = '^adj_(\d+) = ''([XYZRPW\-]{6})''(.*)$';
         k = 0;
         while idx <= numel(rawLines) && strncmp(rawLines{idx}, 'adj_', 4)
-            tok = regexp(rawLines{idx}, patA, 'tokens');
-            if isempty(tok) || str2double(tok{1}{1}) ~= k + 1
+            tok = regexp(rawLines{idx}, patA, 'tokens', 'once');
+            if numel(tok) == 3
+                labs = regexp(tok{3}, '''([^'']*)''', 'tokens');
+                nums = regexp(regexprep(tok{3}, '''[^'']*''', ''), '[-+]?\d*\.?\d+', 'match');
+            else
+                labs = {};  nums = {};
+            end
+            if isempty(tok) || str2double(tok{1}) ~= k + 1 || numel(nums) < 6
                 errors{end+1} = sprintf('Line %d: ''%s''  - Expected: "adj_%d = ''XYZRPW'', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0"', idx, rawLines{idx}, k + 1);
                 idx = idx + 1;
                 continue;
             end
             if k < numel(origins)
-                adjCfg.masks(k+1, :) = tok{1}{2} ~= '-';
-                for j = 1:6, adjCfg.turns(k+1, j) = round(str2double(tok{1}{2+j}), 1); end
+                adjCfg.masks(k+1, :) = tok{2} ~= '-';
+                for j = 1:6, adjCfg.turns(k+1, j) = round(str2double(nums{j}), 1); end
+                for j = 1:min(numel(labs), 6)
+                    adjCfg.labels{k+1, j} = labs{j}{1};
+                end
             else
                 needRewrite = true;
                 rewriteWhy{end+1} = 'adj_k lines beyond the number of origins dropped';

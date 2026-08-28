@@ -30,8 +30,9 @@ newO = newOrigins(newActive);
 changed = any(abs(e) > 0) || any(any(abs(M - eye(3)) > 1e-12));
 
 set(0, 'CurrentFigure', mainFig);
-animState = get(pinfo.animate_but, 'Value');
-set(pinfo.animate_but, 'Value', 0);       % a frame change is redrawn, not animated
+if isfield(pinfo, 'animate'), animState = pinfo.animate; else, animState = true; end
+pinfo.animate = false;                    % a frame change is redrawn, not animated
+set(mainFig, 'UserData', pinfo);
 
 if changed
     % Apply any pending (typed but unsolved) delta in the frame it was entered
@@ -64,10 +65,14 @@ if changed
     for t = {'roll', 'pitch', 'yaw', 'Pxval', 'Pyval', 'Pzval'}
         setVal([t{1} 'delta'], getVal(t{1}) - getVal([t{1} '_old']));
     end
-    % the sketch keeps the joints where they are on screen and the user's
-    % view; only its triad follows the frame, and the drawing is refitted
-    if ~isfield(pinfo, 'sketch_disp'), pinfo.sketch_disp = eye(3); end
-    pinfo.sketch_disp = pinfo.sketch_disp * M';
+    % The sketch's display frame is left exactly as it is, so the triad keeps
+    % pointing the same way on screen and the user's view angle is kept; the
+    % coordinates have moved, so draw_plat's fit simply re-centres the drawing
+    % in the axes.  (Deriving the frame again here would re-orient the sketch,
+    % because the standard frame depends on where the origin sits.)
+    if ~isfield(pinfo, 'sketch_disp') || isempty(pinfo.sketch_disp)
+        pinfo.sketch_disp = eye(3);
+    end
     pinfo.sketch_auto = false;
 end
 
@@ -81,6 +86,7 @@ for i = 1:numel(newOrigins)
     if ~isempty(j)
         newCfg.masks(i, :) = oldCfg.masks(j, :);
         newCfg.turns(i, :) = oldCfg.turns(j, :);
+        newCfg.labels(i, :) = oldCfg.labels(j, :);
     end
 end
 pinfo.adj_config    = newCfg;
@@ -101,5 +107,7 @@ if changed
 else
     fprintf('origins updated; current origin: ''%s'' (%s from Origin 1).\n', newO.name, desc);
 end
-set(pinfo.animate_but, 'Value', animState);
+pinfo = get(mainFig, 'UserData');         % it has been rewritten meanwhile
+pinfo.animate = animState;
+set(mainFig, 'UserData', pinfo);
 end

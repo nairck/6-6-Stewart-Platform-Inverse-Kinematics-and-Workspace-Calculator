@@ -22,8 +22,9 @@ setVal = @(f, v) set(pinfo.(f), 'String', sprintf('%.3f', v));
 axes   = rpy_axes_of(pinfo);           % roll/pitch/yaw axes assignment (unchanged here)
 
 set(0, 'CurrentFigure', mainFig);
-animState = get(pinfo.animate_but, 'Value');
-set(pinfo.animate_but, 'Value', 0);      % an axis change is redrawn, not animated
+if isfield(pinfo, 'animate'), animState = pinfo.animate; else, animState = true; end
+pinfo.animate = false;                    % an axis change is redrawn, not animated
+set(mainFig, 'UserData', pinfo);
 
 % apply any typed-but-unsolved delta in the axes it was entered in
 solve_inverse();
@@ -116,6 +117,8 @@ solve_inverse();                         % legs unchanged; redraw in the new axe
 color_input_box();
 fprintf('coordinate axes relabelled: current X -> %s, Y -> %s, Z -> %s. Joints, poses, limits and origins are now expressed in the new axes; the sketch keeps its view and its triad shows the new axes.\n', ...
     mapping{1}, mapping{2}, mapping{3});
-set(pinfo.animate_but, 'Value', animState);
+pinfo = get(mainFig, 'UserData');         % it has been rewritten meanwhile
+pinfo.animate = animState;
+set(mainFig, 'UserData', pinfo);
 end
 

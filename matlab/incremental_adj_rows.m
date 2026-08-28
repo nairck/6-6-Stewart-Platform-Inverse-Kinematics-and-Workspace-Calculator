@@ -1,4 +1,4 @@
-function rows = incremental_adj_rows(mainFig, selections)
+function rows = incremental_adj_rows(mainFig, selections, fromHome)
 %INCREMENTAL_ADJ_ROWS  Rows of the incremental adjustment table (identical
 %   maths to the Python adj_table.py).
 %
@@ -27,8 +27,16 @@ for i = 1:6
     a(i,:) = [getVal(sprintf('base%dx',i)), getVal(sprintf('base%dy',i)), getVal(sprintf('base%dz',i))];
     b(i,:) = [getVal(sprintf('plat%dx',i)), getVal(sprintf('plat%dy',i)), getVal(sprintf('plat%dz',i))];
 end
-R = rotation_rpy(getVal('roll'), getVal('pitch'), getVal('yaw'), axesRpy);
-t = [getVal('Pxval'); getVal('Pyval'); getVal('Pzval')];
+% From Home: the zero-displacement configuration, which is the zero pose in
+% every origin's frame.  From New: the pose now displayed in the main window.
+if nargin < 3 || isempty(fromHome), fromHome = true; end
+if fromHome
+    R = eye(3);
+    t = zeros(3, 1);
+else
+    R = rotation_rpy(getVal('roll'), getVal('pitch'), getVal('yaw'), axesRpy);
+    t = [getVal('Pxval'); getVal('Pyval'); getVal('Pzval')];
+end
 lead = getVal('actuatorLead');  if isnan(lead) || lead == 0, lead = 1; end
 [R_A, d_A] = origin_frame(pinfo.origins(pinfo.origin_active), axesRpy);
 E = eye(3);

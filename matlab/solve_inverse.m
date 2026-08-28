@@ -74,7 +74,7 @@ set(pi.Pzval,  'String', sprintf(fmt, pz));
 
 % Draw or animate platform
 plat_coords = inverse_solution(25:42);
-if get(pi.animate_but,'Value')
+if ~isfield(pi, 'animate') || pi.animate
     anim_plat(plat_coords);
 else
     draw_plat(plat_coords);

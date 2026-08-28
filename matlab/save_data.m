@@ -61,7 +61,14 @@ function save_data()
             for i = 1:size(cfg.masks, 1)
                 mask = repmat('-', 1, 6);
                 mask(cfg.masks(i, :)) = letters(cfg.masks(i, :));
-                fprintf(fid, 'adj_%d = ''%s'', %.1f, %.1f, %.1f, %.1f, %.1f, %.1f\n', i, mask, cfg.turns(i, :));
+                line = sprintf('adj_%d = ''%s'', %.1f, %.1f, %.1f, %.1f, %.1f, %.1f', ...
+                               i, mask, cfg.turns(i, :));
+                if any(~cellfun(@isempty, cfg.labels(i, :)))   % the labels, when some were typed
+                    for j = 1:6
+                        line = [line sprintf(', ''%s''', cfg.labels{i, j})]; %#ok<AGROW>
+                    end
+                end
+                fprintf(fid, '%s\n', line);
             end
         end
     end

@@ -9,6 +9,11 @@ function draw_plat(plat_coords)
 cla; hold on;
 axis vis3d equal off
 rotate3d on
+% A double-click inside the sketch resets the view.  MATLAB's own double-click
+% reset restores the camera it saved when rotation was switched on, which is
+% not the standard view; running our reset afterwards makes the double-click do
+% exactly what the Reset View button does.
+set(rotate3d(gcf), 'ActionPostCallback', @(f, ~) sketch_click_done(f));
 plotinfo = get(gcf,'UserData');
 % Lines are clipped to the axes' data box by default while text is not; the
 % axes rectangle itself is the only boundary the sketch should have, so every
@@ -100,15 +105,17 @@ for e = 1:size(platformEdges,1)
 end
 
 %── Fit the drawing to the axes for the current view ──────────────────
-% The limits enclose everything just drawn (axis equal keeps the geometry
-% undistorted); the camera view angle is recomputed so the drawing fills the
-% axes, then widened by 10 percent for a comfortable margin around the limiting
-% edge, and frozen (vis3d) so mouse rotation does not rescale it.  Re-done on
-% every full redraw (start-up, origin or axis change); anim_plat.m keeps it.
+% The drawing is centred in the axes and magnified until its projected
+% bounding box fills them, with a small margin on the limiting side (see
+% fit_sketch_view.m, which mirrors the Python version's fit), then frozen
+% (vis3d) so mouse rotation does not rescale it.  Re-done on every full redraw
+% (start-up, origin or axis change); anim_plat.m keeps it.
 axis(gca, 'equal');
-set(gca, 'CameraViewAngleMode', 'auto');
-camva(gca, camva(gca) * 1.10);
+fitPts = [basePts, platPts, zeros(3,1), arrow_len * D];   % joints, origin, triad tips
+fit_sketch_view(gca, fitPts);
 axis(gca, 'vis3d');
+plotinfo.fit_pts = fitPts;            % Reset View re-uses them
+set(gcf, 'UserData', plotinfo);
 
 %── Store updated handles and finish ────────────────────────────────────
 set(gcf,'UserData',plotinfo);

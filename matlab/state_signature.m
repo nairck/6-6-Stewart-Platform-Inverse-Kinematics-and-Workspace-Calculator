@@ -28,7 +28,8 @@ function sig = state_signature(mainFig)
     parts{end+1} = ['rpy=' rpy_axes_of(pinfo)];
     if isfield(pinfo, 'adj_config')
         cfg = adj_config_normalise(pinfo.adj_config, numel(pinfo.origins));
-        parts{end+1} = sprintf('adj=%d|%s|%s', cfg.decimals, mat2str(cfg.masks), mat2str(cfg.turns));
+        parts{end+1} = sprintf('adj=%d|%s|%s|%s', cfg.decimals, mat2str(cfg.masks), ...
+                               mat2str(cfg.turns), strjoin(cfg.labels(:)', '|'));
     end
     sig = strjoin(parts, ';');
 end

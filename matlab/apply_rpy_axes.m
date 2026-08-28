@@ -16,8 +16,9 @@ if ~any(strcmp(newAxes, {'XYZ', 'YZX', 'ZXY'})) || strcmp(newAxes, oldAxes)
     return;
 end
 set(0, 'CurrentFigure', mainFig);
-animState = get(pinfo.animate_but, 'Value');
-set(pinfo.animate_but, 'Value', 0);
+if isfield(pinfo, 'animate'), animState = pinfo.animate; else, animState = true; end
+pinfo.animate = false;                    % an angle reassignment is redrawn, not animated
+set(mainFig, 'UserData', pinfo);
 solve_inverse();                            % apply any pending delta first
 
 for sfx = {'_old', ''}
@@ -55,5 +56,7 @@ solve_inverse();
 color_input_box();
 fprintf('rotation angles reassigned: roll about %s, pitch about %s, yaw about %s (was %s, %s, %s). Poses, limits and origins re-expressed; nothing moved.\n', ...
     newAxes(1), newAxes(2), newAxes(3), oldAxes(1), oldAxes(2), oldAxes(3));
-set(pinfo.animate_but, 'Value', animState);
+pinfo = get(mainFig, 'UserData');         % it has been rewritten meanwhile
+pinfo.animate = animState;
+set(mainFig, 'UserData', pinfo);
 end

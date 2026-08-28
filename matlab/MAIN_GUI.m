@@ -219,10 +219,10 @@ switch fcn
             'quit','Quit',[768,10,90,25];
             'reset_view_me','Reset View',[676,10,90,25];
             'adj_table_me','Incremental Adj. Table',[530,10,130,25];
-            'save_me','Save Everything',[247,10,100,25];
-            'overwrite_me','Update Old Pose',[247,37,100,25];
-            'zero_me','Zero Input Values',[247,64,100,25];
-            'home_me','Go Home Input Val.',[247,91,100,25];
+            'save_me','Save Everything',[247,10,112,25];
+            'overwrite_me','Update Old Pose',[247,37,112,25];
+            'zero_me','Zero Input Values',[247,64,112,25];
+            'home_me','Go Home Input Val.',[247,91,112,25];
             'solve_inv','Solve Inverse Kinematics',[54,10,186,25];
             'workspace_me','Draw Orientation Workspace',[475+RS,655+TS,150,25];
             'reachable_workspace_me','Draw Reachable Workspace',[475+RS,680+TS,150,25];
@@ -239,13 +239,12 @@ switch fcn
         plotinfo.solutions_text = uicontrol(fig,'Style','text','String',' ','Position',[482,50,70,15],'Visible','off');
         plotinfo.nextsol = uicontrol(fig,'Style','pushbutton','String','>>','Position',[560,50,25,20], ...
             'Visible','off','Callback',sprintf('%s(''nextsol'');',myname));
-        plotinfo.animate_but = uicontrol(fig,'Style','checkbox','String','Animate?','Value',1,'Position',[630+RS,40,70,20]);
         % Double height (two 25 px rows): spans the header row and the ZPD Leg
         % Length row, level with the two Draw-Workspace buttons (605..655); left
-        % edge on the "zsi" column header (230), right edge on the platform Z
-        % column (509 + 70 = 579).
+        % edge one character in from the "zsi" column header (239), right edge
+        % on the platform Z column (509 + 70 = 579).
         plotinfo.editzpd_but = uicontrol(fig,'Style','togglebutton','String','Edit Zero-Displacement Coordinates', ...
-            'Position',[230,605,349,50],'FontSize',11,'Callback',sprintf('%s(''editzpd'');',myname));
+            'Position',[239,605,340,50],'FontSize',11,'Callback',sprintf('%s(''editzpd'');',myname));
         plotinfo.editConstraints_but = uicontrol(fig,'Style','togglebutton','String','Edit Workspace Search Limits and Constraints', ...
             'Position',[475+RS,604+TS,230,25],'Callback',sprintf('%s(''editConstraints'');',myname));
 
@@ -264,7 +263,9 @@ switch fcn
         plotinfo.origins = struct('name',{'Origin 1'},'dx',{0},'dy',{0},'dz',{0},'roll',{0},'pitch',{0},'yaw',{0});
         plotinfo.origin_active = 1;
         plotinfo.rpy_axes = 'XYZ';           % which axis roll / pitch / yaw rotate about
+        plotinfo.animate = true;             % animate a solved move (no on-screen control)
         plotinfo.adj_config = adj_config_default(1);   % Incremental Adj. Table set-up
+        plotinfo.adj_view = struct('decimals', 3, 'roundUp', 0.99, 'fromHome', true);  % its view settings, session only
         % Sketch display frame (see draw_plat.m): identity until the axes are
         % relabelled with "Change Coords.".
         plotinfo.sketch_disp = eye(3);
@@ -340,12 +341,7 @@ switch fcn
     case 'reset_view_me'
         % back to the sketch's default view angle and fit (as in the Python
         % version's Reset View); the display frame is kept
-        pinfo = get(gcf, 'UserData');
-        view(pinfo.ax, [-30, 20]);
-        axis(pinfo.ax, 'equal');
-        set(pinfo.ax, 'CameraViewAngleMode', 'auto');
-        camva(pinfo.ax, camva(pinfo.ax) * 1.10);
-        axis(pinfo.ax, 'vis3d');
+        reset_sketch_view(gcf);          % also what a double-click does
 
     case 'workspace_me'
         pi = get(gcf,'UserData');
