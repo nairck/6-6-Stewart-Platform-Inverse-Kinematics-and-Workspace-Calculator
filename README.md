@@ -32,15 +32,15 @@ and saved files are compatible across them.
 | **Python** | Building your own binary (incl. **macOS / Linux**), or reading/modifying the source. | [`python/`](python/) — `pip install -r requirements.txt` then `python run.py` |
 
 **Which should I use?**
-- Just want to *use* the tool on Windows → grab the **executable** from Releases.
+- Just want to *use* the tool on Windows or Linux → grab the **prebuilt application** from Releases.
 - Have MATLAB and want the original → **MATLAB** version.
-- Want it on **macOS or Linux**, or want to build/modify it yourself → **Python** version (it also
-  builds the Windows `.exe`).
+- Want it on **macOS**, or want to build/modify it yourself → **Python** version (it also builds the
+  Windows and Linux applications).
 
-The Windows executable is built from the Python version. The Python port additionally offers a
+The prebuilt applications are built from the Python version. The Python port additionally offers a
 docked output console, light/dark/system colour themes, a startup splash, per-window app icons, and
-fully non-blocking workspace/PNG rendering. Prebuilt macOS/Linux binaries are **not** provided —
-the Python version builds them, but those builds are currently **untested** (contributions welcome).
+fully non-blocking workspace/PNG rendering. A macOS `.app` can also be built from it, though that
+build is currently **untested** (contributions welcome).
 
 ---
 
@@ -263,12 +263,18 @@ series of evenly spaced viewing angles for assembling videos or GIFs.*
 
 ## Quick start by version
 
-### Windows executable (no install)
-1. Download `HexapodCalculator.exe` from the **[Releases](../../releases)** page.
-2. Double-click it. On first launch it creates a `formdata.txt` next to itself with default values;
-   replace it with your own saved configuration any time.
-3. Windows SmartScreen may warn about an unrecognized app (the exe isn't code-signed) — choose
-   **More info → Run anyway**.
+### Prebuilt application (no install)
+
+**Windows.** Download `HexapodCalculator.exe` from the **[Releases](../../releases)** page and
+double-click it. SmartScreen may warn about an unrecognized app (the exe isn't code-signed) — choose
+**More info → Run anyway**.
+
+**Linux.** Download `HexapodCalculator-linux.tar.gz`, right-click → **Extract Here**, then
+double-click `HexapodCalculator`. It arrives ready to run. Requires Ubuntu 24.04 or newer, or an
+equivalent.
+
+On first launch either one creates a `formdata.txt` next to itself with default values; replace it
+with your own saved configuration any time.
 
 ### MATLAB
 See [`matlab/README.md`](matlab/README.md). In short: open MATLAB (R2020b+), `cd` into `matlab/`,
@@ -283,8 +289,8 @@ python -m venv .venv           # Python 3.11 or 3.12 recommended
 pip install -r requirements.txt
 python run.py                  # run from source
 ```
-To build a standalone binary: `build_windows.bat` (Windows), `./build_macos.sh` (macOS),
-or `./build_linux.sh` (Linux).
+To build a standalone application: `build_windows.bat` (Windows), `./build_linux.sh` (Linux),
+or `./build_macos.sh` (macOS).
 
 ---
 
@@ -297,8 +303,8 @@ or `./build_linux.sh` (Linux).
 ├── docs/figures/    Figures used in this README
 └── README.md        This file
 ```
-The Windows `.exe` is distributed via **Releases** rather than committed to the repository (binaries
-and build artifacts don't belong in git — see `.gitignore`).
+The Windows and Linux applications are distributed via **Releases** rather than committed to the
+repository (binaries and build artifacts don't belong in git — see `.gitignore`).
 
 ---
 
