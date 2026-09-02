@@ -27,7 +27,7 @@ and saved files are compatible across them.
 
 | Version | Best for | Where it lives / how to get it |
 |---|---|---|
-| **Windows executable** (`.exe`) | Running on Windows with **no install** — no MATLAB, no Python, nothing to set up. Just download and double-click. | **[Releases](../../releases)** (download the latest `HexapodCalculator.exe`) |
+| **Prebuilt application** | Running with **no install** on Windows or Linux — no MATLAB, no Python, nothing to set up. | **[Releases](../../releases)** (`HexapodCalculator.exe`, `HexapodCalculator-linux.tar.gz`) |
 | **MATLAB** | MATLAB users; the original, reference implementation. | [`matlab/`](matlab/) — run `RUN_HEXAPOD_CALCULATOR` |
 | **Python** | Building your own binary (incl. **macOS / Linux**), or reading/modifying the source. | [`python/`](python/) — `pip install -r requirements.txt` then `python run.py` |
 
