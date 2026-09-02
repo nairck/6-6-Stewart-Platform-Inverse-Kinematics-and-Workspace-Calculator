@@ -53,13 +53,37 @@ POSE_DOFS = ["roll", "pitch", "yaw", "Pxval", "Pyval", "Pzval"]
 
 
 def data_path(name):
-    """Locate a data file next to the executable / script (and CWD fallback)."""
-    roots = [os.path.dirname(os.path.abspath(sys.argv[0])), os.getcwd()]
-    for r in roots:
+    """Locate a data file next to the program (with a working-directory fallback).
+
+    Inside a Linux AppImage the program itself lives on a read-only mount, so
+    "next to the program" must mean next to the .AppImage file the user
+    double-clicked; the loader puts that path in APPIMAGE.  That folder is
+    therefore searched first, and an existing file is preferred over an empty
+    slot.  If nothing exists yet the first writable folder is used, so saving
+    always works.
+    """
+    roots = []
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:
+        roots.append(os.path.dirname(os.path.abspath(appimage)))
+    roots += [os.path.dirname(os.path.abspath(sys.argv[0])), os.getcwd()]
+    seen, ordered = set(), []
+    for r in roots:                      # keep the order, drop duplicates
+        if r and r not in seen:
+            seen.add(r)
+            ordered.append(r)
+    for r in ordered:                    # an existing file we can also write to
+        p = os.path.join(r, name)
+        if os.path.isfile(p) and os.access(r, os.W_OK):
+            return p
+    for r in ordered:                    # nothing yet: the first writable folder
+        if os.access(r, os.W_OK):
+            return os.path.join(r, name)
+    for r in ordered:                    # read-only, but at least it can be read
         p = os.path.join(r, name)
         if os.path.isfile(p):
             return p
-    return os.path.join(roots[0], name)
+    return os.path.join(ordered[0], name)
 
 
 # ---------------------------------------------------------------------------
