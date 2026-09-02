@@ -143,7 +143,8 @@ else:
     _toc += [[]]
     exe = EXE(
         pyz, *_toc,
-        name="HexapodCalculator",
+        exclude_binaries=True,          # one-folder: COLLECT gathers the binaries,
+        name="HexapodCalculator",       # so the EXE itself must not embed them
         debug=False, bootloader_ignore_signals=False, strip=False,
         upx=False, console=show_console, icon=icon,
     )

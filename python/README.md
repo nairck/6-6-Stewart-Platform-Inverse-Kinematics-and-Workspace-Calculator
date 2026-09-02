@@ -19,9 +19,30 @@ Version 1.2.
 ## Requirements
 
 - **Python 3.11 or 3.12** recommended (3.13 and 3.14 usually work, but are less tested against the
-  PySide6 + VTK + PyInstaller stack).
-- Everything else installs from `requirements.txt`: PySide6, PyVista, pyvistaqt, matplotlib, NumPy,
-  SciPy, and PyInstaller for building.
+  PySide6 + VTK + PyInstaller stack). Everything else installs from `requirements.txt`: PySide6,
+  PyVista, pyvistaqt, matplotlib, NumPy, SciPy, and PyInstaller for building.
+
+**Windows.** Nothing else is needed. Install Python from python.org (tick "Add python.exe to PATH"),
+then follow *Run from source* below, or just download the `.exe` from the
+[Releases page](../../releases).
+
+**Linux.** Qt, VTK and matplotlib need system libraries that no Python package provides, and
+PyInstaller needs `objdump`. A minimal Ubuntu or Debian install has none of them. One command
+installs the lot:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip python3-dev python3-tk   binutils patchelf file wget   libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1   libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1   libxcb-xfixes0 libxcb-xkb1 libx11-xcb1 libxkbcommon-x11-0 libxkbcommon0   libgl1 libegl1 libglu1-mesa libdbus-1-3 libfontconfig1 libfreetype6   libxrender1 libxi6 libsm6 libice6
+```
+
+Three of these fail with messages that do not name the package: without `libxcb-cursor0` the program
+exits with "Could not load the Qt platform plugin xcb", without `binutils` PyInstaller stops with
+"On Linux, objdump is required", and without `python3-tk` it stops on a missing `_tkinter`. On
+Fedora use `dnf` with `python3-devel`, `python3-tkinter`, the `xcb-util-*` packages, `mesa-libGL`,
+`mesa-libEGL`, `libxkbcommon-x11`, `fontconfig`, `dbus-libs` and `binutils`; on Arch use `pacman`
+with `tk`, `xcb-util-*`, `libglvnd`, `libxkbcommon-x11`, `fontconfig` and `binutils`.
+
+Users of the released Linux build **need none of this**: the single file carries everything.
 
 ## Run from source
 
@@ -38,24 +59,61 @@ python run.py
 On Windows the `py` launcher works too: `py -m venv .venv`, `py -m pip install -r requirements.txt`,
 `py run.py`.
 
-## Build a standalone binary
+## Build a standalone program
 
 Always build with the spec file, which lists the VTK hidden imports and bundles the assets.
 
-```bash
-# Windows           one-click, produces dist\HexapodCalculator.exe
+**Windows** produces `dist\HexapodCalculator.exe`:
+
+```bat
 build_windows.bat
-
-# macOS / Linux
-./build_macos.sh
-./build_linux.sh
-
-# or directly, on any platform
-pyinstaller hexapod.spec
 ```
 
-Set `HEXAPOD_ONEFILE=0` before building for a one-folder build, which starts almost instantly; the
-default one-file build unpacks to a temporary folder on every launch.
+**Linux** produces `dist/HexapodCalculator`, a single double-clickable file that needs nothing
+installed on the machine that runs it, not even Python:
+
+```bash
+cd python
+chmod +x build_linux.sh     # a zip does not keep the executable permission
+./build_linux.sh
+```
+
+The build takes a few minutes and asks for your password once, to install what the machine is
+missing. Run the result with `./dist/HexapodCalculator`, or double-click it.
+
+It is an AppImage, without the extension, so it looks and behaves like an ordinary program. The
+script installs whatever the build machine is missing, compiles with PyInstaller, adds the X/xcb
+libraries Qt loads at run time (PyInstaller cannot detect them, and their absence is the usual cause
+of "platform plugin xcb" on someone else's machine), and packs the result with its icon.
+
+A Linux executable cannot carry a file-manager icon the way a Windows `.exe` does, so the program
+registers a MIME type for itself the first time it runs, with the icon attached to it. Nothing is
+added to the desktop or the applications menu, and `./HexapodCalculator --uninstall-icon` removes
+the registration.
+
+**macOS** produces `dist/HexapodCalculator.app`:
+
+```bash
+chmod +x build_macos.sh
+./build_macos.sh
+```
+
+### Building a Linux release for older distros
+
+glibc is forward compatible only, so a binary built on Ubuntu 24.04 will not start on 22.04.
+Build on the oldest system you intend to support. A container does that without installing anything
+but Docker:
+
+```bash
+cd python
+docker run --rm -v "$PWD/..":/src -w /src/python ubuntu:22.04 bash -c \
+  'apt update && apt install -y sudo && ./build_linux.sh'
+```
+
+The file it writes runs on Ubuntu 22.04 and everything newer.
+
+Set `HEXAPOD_ONEFILE=0` before `build_windows.bat` for a one-folder Windows build, which starts
+almost instantly; the default one-file build unpacks to a temporary folder on every launch.
 
 ## Performance
 
@@ -143,6 +201,12 @@ python/
   elsewhere; the last line says how far it got.
 - **Build with a plain venv, not conda** — conda's VTK confuses PyInstaller.
 - **"Multiple Qt bindings" at build time** — build inside `.venv`, which has only PySide6.
+- **Linux: "Could not load the Qt platform plugin xcb"** — `libxcb-cursor0` is missing; see
+  Requirements.
+- **Linux: "On Linux, objdump is required"** — install `binutils`.
+- **Linux: the build stops on `_tkinter`** — install `python3-tk`; matplotlib's splash needs it.
+- **Linux: the icon does not appear on the file** — press F5 in the folder. Only the very first
+  registration on a machine may need the file manager restarted.
 
 ## Credits
 
