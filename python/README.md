@@ -81,6 +81,8 @@ chmod +x build_linux.sh     # a zip does not keep the executable permission
 The build takes a few minutes and asks for your password once, to install what the machine is
 missing. Run the result with `./dist/HexapodCalculator`, or double-click it.
 
+The build writes two files: `dist/HexapodCalculator` to run locally, and `dist/HexapodCalculator-linux.tar.gz` for the release page. A download cannot carry the executable bit, so a bare binary would arrive needing `chmod +x`; extracting the tarball keeps it executable.
+
 It is an AppImage, without the extension, so it looks and behaves like an ordinary program. The
 script installs whatever the build machine is missing, compiles with PyInstaller, adds the X/xcb
 libraries Qt loads at run time (PyInstaller cannot detect them, and their absence is the usual cause
