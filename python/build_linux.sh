@@ -244,13 +244,24 @@ rm -f "$DIST/Hexapod Calculator.desktop" "$DIST/.HexapodCalculator.png" \
       "$HOME/.local/share/applications/hexapod-calculator.desktop"
 rm -rf "$HOME/.local/share/hexapod-calculator"
 
+# A download over HTTP cannot carry the executable bit, so a bare binary always
+# arrives needing "chmod +x" or a trip through the Properties dialog.  tar does
+# store the file mode, so the release asset is a tarball: the user extracts it
+# (a right-click in any file manager) and the program is ready to run.
+echo "      packing the release archive..."
+tar --mode=0755 -czf "dist/$APP-linux.tar.gz" -C dist "$APP"
+
 echo "      tidying up..."
 rm -rf build AppDir                       # scratch; the AppImage carries everything
 
 echo
-echo "Done:  dist/$APP"
+echo "Done."
+echo "  dist/$APP              run this one yourself"
+echo "  dist/$APP-linux.tar.gz  upload this one to the release page"
 echo
-echo "That single file is the whole program: portable, no Python, no installer."
+echo "Both hold the same program: portable, no Python, no installer.  The tarball"
+echo "exists because a download cannot carry the executable bit, so a bare binary"
+echo "would arrive needing chmod +x; extracting the tarball keeps it executable."
 echo "It shows its own icon in the file manager, usually straight away; press"
 echo "F5 in the folder if not.  (Only on the very first registration might the"
 echo "file manager need restarting: thunar -q, nautilus -q, nemo -q.)"
